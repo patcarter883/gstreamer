@@ -301,7 +301,7 @@ tsmux_stream_free (TsMuxStream * stream)
   if (stream->codec_data)
     gst_buffer_unref (stream->codec_data);
 
-  g_free (stream);
+  g_slice_free (TsMuxStream, stream);
 }
 
 /**

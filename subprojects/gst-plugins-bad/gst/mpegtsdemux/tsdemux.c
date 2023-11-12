@@ -237,6 +237,7 @@ struct _TSDemuxStream
       "systemstream = (boolean) FALSE; " \
     "video/x-h264,stream-format=(string)byte-stream;" \
     "video/x-h265,stream-format=(string)byte-stream;" \
+    "video/x-av1,stream-format=(string)obu-stream,alignment=(string)frame;" \
     "video/x-dirac;" \
     "video/x-cavs;" \
     "video/x-wmv," \
