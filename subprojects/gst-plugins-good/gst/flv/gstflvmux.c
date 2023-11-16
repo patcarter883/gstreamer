@@ -1492,8 +1492,7 @@ gst_flv_mux_prepare_src_caps (GstFlvMux * mux, GstBuffer ** header_buf,
     GstFlvMuxPad *pad = l->data;
 
     /* Get H.264 and AAC codec data, if present */
-    if (pad && mux->video_pad == pad && pad->codec == 7
-        && pad->is_ex_header == FALSE) {
+    if (pad && mux->video_pad == pad && pad->codec == 7) {
       if (pad->codec_data == NULL)
         GST_WARNING_OBJECT (mux, "Codec data for video stream not found, "
             "output might not be playable");
@@ -2093,6 +2092,7 @@ gst_flv_mux_aggregate (GstAggregator * aggregator, gboolean timeout)
       gst_flv_mux_push (mux, buf);
     mux->new_metadata = FALSE;
   }
+
   if (best) {
     best->dts =
         gst_flv_mux_segment_to_running_time (&GST_AGGREGATOR_PAD
