@@ -129,8 +129,6 @@ struct _GstFlvDemux
   gdouble framerate;
   guint32 video_bitrate;
 
-  guint32 fourcc;
-
   gboolean random_access;
   gboolean need_header;
   gboolean has_audio;
