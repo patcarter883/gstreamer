@@ -257,6 +257,7 @@ struct _GstValidateScenarioPrivate
   gboolean changing_state;
   gboolean needs_async_done;
   gboolean ignore_eos;
+  gboolean ignore_invalid_positions;
   gboolean allow_errors;
   GstState target_state;
 
@@ -1379,7 +1380,8 @@ _set_timed_value_property (GstValidateScenario * scenario,
 
 static GstValidateExecuteActionReturn
 _check_property (GstValidateScenario * scenario, GstValidateAction * action,
-    gpointer object, const gchar * propname, const GValue * expected_value)
+    gpointer object, const gchar * propname, const GValue * expected_value,
+    gboolean report_error)
 {
   GValue cvalue = G_VALUE_INIT;
 
@@ -1387,6 +1389,9 @@ _check_property (GstValidateScenario * scenario, GstValidateAction * action,
   g_object_get_property (object, propname, &cvalue);
 
   if (gst_value_compare (&cvalue, expected_value) != GST_VALUE_EQUAL) {
+    if (!report_error)
+      return GST_VALIDATE_EXECUTE_ACTION_ERROR;
+
     gchar *expected = gst_value_serialize (expected_value), *observed =
         gst_value_serialize (&cvalue);
 
@@ -1449,7 +1454,7 @@ _set_or_check_properties (GQuark field_id, const GValue * value,
         gst_validate_object_set_property_full (GST_VALIDATE_REPORTER (scenario),
         G_OBJECT (obj), paramspec->name, value, flags);
   else
-    res = _check_property (scenario, action, obj, paramspec->name, value);
+    res = _check_property (scenario, action, obj, paramspec->name, value, TRUE);
 
 done:
   gst_clear_object (&obj);
@@ -2119,6 +2124,162 @@ done:
   return res;
 }
 
+typedef struct
+{
+  GstValidateAction *action;
+  GRecMutex m;
+  gulong sid;
+
+  GList *wanted_streams;
+} SelectStreamData;
+
+static SelectStreamData *
+select_stream_data_new (GstValidateAction * action)
+{
+  SelectStreamData *d = g_new0 (SelectStreamData, 1);
+
+  d->action = action;
+
+  return d;
+}
+
+static void
+select_stream_data_free (SelectStreamData * d)
+{
+  gst_validate_action_unref (d->action);
+  g_list_free_full (d->wanted_streams, g_free);
+  g_free (d);
+}
+
+
+static void
+stream_selection_cb (GstBus * bus, GstMessage * message, SelectStreamData * d)
+{
+  GstValidateScenario *scenario = NULL;
+  GstStreamCollection *collection = NULL, *selected_streams = NULL;
+  GList *streams = NULL;
+
+  switch (GST_MESSAGE_TYPE (message)) {
+    case GST_MESSAGE_STREAM_COLLECTION:
+      /* Handle the case were we have 2 StreamCollection message happennning at the
+       * same time on the bus */
+      g_rec_mutex_lock (&d->m);
+      scenario = gst_validate_action_get_scenario (d->action);
+      gst_message_parse_stream_collection (message, &collection);
+      g_assert (collection);
+      break;
+    case GST_MESSAGE_STREAMS_SELECTED:
+      g_rec_mutex_lock (&d->m);
+      gst_message_parse_streams_selected (message, &selected_streams);
+      g_assert (selected_streams);
+      goto done;
+    default:
+      return;
+  }
+
+  const GValue *v = gst_structure_get_value (d->action->structure, "indexes");
+  if (G_VALUE_HOLDS_INT (v)) {
+    GstStream *stream =
+        gst_stream_collection_get_stream (collection, g_value_get_int (v));
+
+    if (!stream) {
+      GST_VALIDATE_REPORT_ACTION (scenario, d->action,
+          SCENARIO_ACTION_EXECUTION_ERROR,
+          "Could not find stream with index %d in %" GST_PTR_FORMAT,
+          g_value_get_int (v), collection);
+      goto done;
+    }
+
+    streams =
+        g_list_append (streams, g_strdup (gst_stream_get_stream_id (stream)));
+  } else if (GST_VALUE_HOLDS_ARRAY (v)) {
+    for (gint i = 0; i < gst_value_array_get_size (v); i++) {
+      const GValue *ivalue = gst_value_array_get_value (v, i);
+
+      if (!G_VALUE_HOLDS_INT (ivalue)) {
+        gst_validate_error_structure (d->action,
+            "Could not parse `indexes` in %" GST_PTR_FORMAT,
+            d->action->structure);
+        goto done;
+      }
+
+      GstStream *stream = gst_stream_collection_get_stream (collection,
+          g_value_get_int (ivalue));
+      if (!stream) {
+        GST_VALIDATE_REPORT_ACTION (scenario, d->action,
+            SCENARIO_ACTION_EXECUTION_ERROR,
+            "Could not find stream with index %d in %" GST_PTR_FORMAT,
+            g_value_get_int (ivalue), collection);
+        goto done;
+      }
+      streams =
+          g_list_append (streams, g_strdup (gst_stream_get_stream_id (stream)));
+    }
+  } else {
+    gst_validate_error_structure (d->action,
+        "Could not parse `indexes` in %" GST_PTR_FORMAT, d->action->structure);
+    goto done;
+  }
+
+
+  GstElement *pipeline = gst_validate_scenario_get_pipeline (scenario);
+  if (pipeline == NULL) {
+    GST_VALIDATE_REPORT_ACTION (scenario, d->action,
+        SCENARIO_ACTION_EXECUTION_ERROR,
+        "Can't execute a '%s' action after the pipeline " "has been destroyed.",
+        d->action->type);
+
+    goto done;
+  }
+
+  if (!gst_element_send_event (GST_ELEMENT (GST_MESSAGE_SRC (message)),
+          gst_event_new_select_streams (streams))) {
+    GST_VALIDATE_REPORT_ACTION (scenario, d->action,
+        SCENARIO_ACTION_EXECUTION_ERROR,
+        "Could not send `SELECT_STREAM` event!");
+  }
+
+  g_list_free_full (d->wanted_streams, g_free);
+  d->wanted_streams = streams;
+
+done:
+  if (selected_streams && d->sid) {
+    /* Consider action done once we get the STREAM_SELECTED signal */
+    gst_validate_action_set_done (gst_validate_action_ref (d->action));
+    gst_bus_disable_sync_message_emission (bus);
+    g_signal_handler_disconnect (bus, d->sid);
+    d->sid = 0;
+  }
+
+  gst_clear_object (&scenario);
+  gst_clear_object (&collection);
+
+  g_rec_mutex_unlock (&d->m);
+}
+
+static GstValidateExecuteActionReturn
+_execute_select_streams (GstValidateScenario * scenario,
+    GstValidateAction * action)
+{
+  DECLARE_AND_GET_PIPELINE (scenario, action);
+
+  GstBus *bus = gst_element_get_bus (pipeline);
+  gst_bus_enable_sync_message_emission (bus);
+
+  SelectStreamData *d = select_stream_data_new (action);
+  /* Ensure that the data signal ID is set before the callback is called */
+  g_rec_mutex_lock (&d->m);
+  d->sid = g_signal_connect_data (bus,
+      "sync-message",
+      G_CALLBACK (stream_selection_cb),
+      d, (GClosureNotify) select_stream_data_free, 0);
+  g_rec_mutex_unlock (&d->m);
+
+  gst_object_unref (bus);
+
+  return GST_VALIDATE_EXECUTE_ACTION_NON_BLOCKING;
+}
+
 static GstValidateExecuteActionReturn
 _execute_switch_track (GstValidateScenario * scenario,
     GstValidateAction * action)
@@ -2300,7 +2461,9 @@ _check_position (GstValidateScenario * scenario, GstValidateAction * act,
       GST_CLOCK_TIME_IS_VALID (priv->segment_stop) ? priv->segment_stop +
       priv->seek_pos_tol : -1;
 
-  if ((GST_CLOCK_TIME_IS_VALID (stop_with_tolerance)
+  if (priv->ignore_invalid_positions) {
+    GST_DEBUG_OBJECT (scenario, "Ignoring invalid position");
+  } else if ((GST_CLOCK_TIME_IS_VALID (stop_with_tolerance)
           && *position > stop_with_tolerance)
       || (priv->seek_flags & GST_SEEK_FLAG_ACCURATE
           && *position < start_with_tolerance
@@ -2828,30 +2991,84 @@ stop_waiting (GstValidateAction * action)
   return G_SOURCE_REMOVE;
 }
 
-static void
-stop_waiting_signal (GstStructure * data)
+typedef struct
 {
-  guint sigid = 0;
   GstElement *target;
-  GstStructure *check = NULL;
   GstValidateAction *action;
-  GstValidateScenario *scenario;
+  guint sigid;
+  gboolean check_done;
+  gboolean check_property;
+  GMutex lock;
+} WaitingSignalData;
 
-  gst_structure_get (data, "target", G_TYPE_POINTER, &target,
-      "action", GST_TYPE_VALIDATE_ACTION, &action, "sigid", G_TYPE_UINT, &sigid,
-      NULL);
-  gst_structure_free (data);
+static WaitingSignalData *
+waiting_signal_data_new (GstElement * target, GstValidateAction * action)
+{
+  WaitingSignalData *data = g_new0 (WaitingSignalData, 1);
 
-  scenario = gst_validate_action_get_scenario (action);
+  data->target = gst_object_ref (target);
+  data->action = gst_validate_action_ref (action);
+
+  return data;
+}
+
+static void
+waiting_signal_data_free (WaitingSignalData * data)
+{
+  GstValidateScenario *scenario =
+      gst_validate_action_get_scenario (data->action);
 
   g_assert (scenario);
+
+  gst_object_unref (data->target);
+  gst_validate_action_unref (data->action);
+  g_free (data);
+
+  gst_object_unref (scenario);
+}
+
+static void
+waiting_signal_data_disconnect (WaitingSignalData * data,
+    GstValidateScenario * scenario)
+{
+  g_assert (scenario);
   SCENARIO_LOCK (scenario);
-  g_signal_handler_disconnect (target,
-      sigid ? sigid : scenario->priv->signal_handler_id);
-  if (!sigid)
+  g_signal_handler_disconnect (data->target,
+      data->sigid ? data->sigid : scenario->priv->signal_handler_id);
+  if (!data->sigid)
     scenario->priv->signal_handler_id = 0;
+  data->sigid = 0;
   SCENARIO_UNLOCK (scenario);
 
+}
+
+static void
+stop_waiting_signal_cb (WaitingSignalData * data)
+{
+  GstStructure *check = NULL;
+  GstValidateAction *action = gst_validate_action_ref (data->action);
+  GstValidateScenario *scenario = NULL;
+
+  g_mutex_lock (&data->lock);
+  if (data->check_done) {
+    GST_INFO_OBJECT (data->action, "Check already done, ignoring signal");
+    g_mutex_unlock (&data->lock);
+
+    goto cleanup;
+  }
+  scenario = gst_validate_action_get_scenario (data->action);
+  if (data->check_property &&
+      _check_property (scenario, action, data->target,
+          gst_structure_get_string (action->structure, "property-name"),
+          gst_structure_get_value (action->structure, "property-value"),
+          FALSE) != GST_VALIDATE_EXECUTE_ACTION_OK) {
+
+    GST_INFO_OBJECT (scenario, "Property check failed, keep waiting");
+
+    goto cleanup;
+  }
+
+  waiting_signal_data_disconnect (data, scenario);
   if (gst_structure_get (action->structure, "check", GST_TYPE_STRUCTURE,
           &check, NULL)) {
     GstValidateAction *subact =
@@ -2868,10 +3085,11 @@ stop_waiting_signal (GstStructure * data)
   }
 
   gst_validate_action_set_done (action);
-  gst_validate_action_unref (action);
   _add_execute_actions_gsource (scenario);
-  gst_object_unref (scenario);
-  gst_object_unref (target);
+
+cleanup:
+  gst_validate_action_unref (action);
+  gst_clear_object (&scenario);
 }
 
 static GstValidateExecuteActionReturn
@@ -2930,54 +3148,77 @@ _execute_wait_for_signal (GstValidateScenario * scenario,
 {
   gboolean non_blocking;
   GstValidateScenarioPrivate *priv = scenario->priv;
-  const gchar *signal_name = gst_structure_get_string
-      (action->structure, "signal-name");
+  gchar *signal_name = g_strdup (gst_structure_get_string
+      (action->structure, "signal-name"));
+  const gchar *property_name = gst_structure_get_string
+      (action->structure, "property-name");
   GList *targets = NULL;
   GstElement *target;
-  GstStructure *data;
+  WaitingSignalData *data;
   GstValidateExecuteActionReturn res = GST_VALIDATE_EXECUTE_ACTION_OK;
+  const GValue *property_value =
+      gst_structure_get_value (action->structure, "property-value");
   DECLARE_AND_GET_PIPELINE (scenario, action);
+  gboolean checking_property = signal_name == NULL;
 
-  REPORT_UNLESS (signal_name, err, "No signal-name given for wait action");
+  REPORT_UNLESS (signal_name || property_name, done,
+      "No signal-name or property-name given for wait action");
+  REPORT_UNLESS (!property_name || (property_name && property_value), done,
+      "`property-name` specified without a `property-value`");
   targets = _find_elements_defined_in_action (scenario, action);
-  REPORT_UNLESS ((g_list_length (targets) == 1), err,
+  REPORT_UNLESS ((g_list_length (targets) == 1), done,
       "Could not find target element.");
 
-  gst_validate_printf (action, "Waiting for '%s' signal\n", signal_name);
+  gst_validate_printf (action, "Waiting for '%s'\n",
+      signal_name ? signal_name : property_name);
 
+  target = targets->data;
+  data = waiting_signal_data_new (target, action);
+
+  if (checking_property) {
+    signal_name = g_strdup_printf ("notify::%s", property_name);
+    g_mutex_lock (&data->lock);
+  }
+
+  SCENARIO_LOCK (scenario);
   if (priv->execute_actions_source_id) {
     g_source_remove (priv->execute_actions_source_id);
     priv->execute_actions_source_id = 0;
   }
-
-  target = targets->data;
-  data =
-      gst_structure_new ("a", "action", GST_TYPE_VALIDATE_ACTION, action,
-      "target", G_TYPE_POINTER, target, NULL);
-  SCENARIO_LOCK (scenario);
-  priv->signal_handler_id = g_signal_connect_swapped (target, signal_name,
-      (GCallback) stop_waiting_signal, data);
+  priv->signal_handler_id = g_signal_connect_data (target, signal_name,
+      (GCallback) stop_waiting_signal_cb, data,
+      (GClosureNotify) waiting_signal_data_free, G_CONNECT_SWAPPED);
 
   non_blocking =
       gst_structure_get_boolean (action->structure, "non-blocking",
       &non_blocking);
   if (non_blocking) {
-    gst_structure_set (data, "sigid", G_TYPE_UINT, priv->signal_handler_id,
-        NULL);
+    data->sigid = priv->signal_handler_id;
     priv->signal_handler_id = 0;
   }
   SCENARIO_UNLOCK (scenario);
 
-  gst_object_unref (pipeline);
-  g_list_free (targets);
-
-
-  return non_blocking ? GST_VALIDATE_EXECUTE_ACTION_NON_BLOCKING :
+  res =
+      non_blocking ? GST_VALIDATE_EXECUTE_ACTION_NON_BLOCKING :
       GST_VALIDATE_EXECUTE_ACTION_ASYNC;
+  if (checking_property) {
+    GST_ERROR ("Checking property value");
+    if (_check_property (scenario, action, target, property_name,
+            property_value, FALSE) == GST_VALIDATE_EXECUTE_ACTION_OK) {
+      data->check_done = TRUE;
+      waiting_signal_data_disconnect (data, scenario);
 
-err:
+      GST_ERROR ("Property check done, returning OK");
+      res = GST_VALIDATE_EXECUTE_ACTION_OK;
+    }
+    g_mutex_unlock (&data->lock);
+  }
+
+done:
+  g_free (signal_name);
   g_list_free_full (targets, gst_object_unref);
   gst_object_unref (pipeline);
+
   return res;
 }
 
@@ -3011,6 +3252,8 @@ _execute_wait (GstValidateScenario * scenario, GstValidateAction * action)
 
   gst_structure_get_boolean (action->structure, "on-clock", &on_clock);
   if (gst_structure_has_field (action->structure, "signal-name")) {
+    return _execute_wait_for_signal (scenario, action);
+  } else if (gst_structure_has_field (action->structure, "property-name")) {
     return _execute_wait_for_signal (scenario, action);
   } else if (gst_structure_has_field (action->structure, "message-type")) {
     return _execute_wait_for_message (scenario, action);
@@ -3434,7 +3677,8 @@ _execute_set_or_check_property (GstValidateScenario * scenario,
         ret = tmpres;
     } else {
       ret =
-          _check_property (scenario, action, l->data, property, property_value);
+          _check_property (scenario, action, l->data, property, property_value,
+          TRUE);
     }
   }
 
@@ -4726,6 +4970,8 @@ gst_validate_scenario_load_structures (GstValidateScenario * scenario,
       }
 
       gst_structure_get_boolean (structure, "ignore-eos", &priv->ignore_eos);
+      gst_structure_get_boolean (structure, "ignore-invalid-positions",
+          &priv->ignore_invalid_positions);
       gst_structure_get_boolean (structure, "allow-errors",
           &priv->allow_errors);
       gst_structure_get_boolean (structure, "actions-on-idle",
@@ -6267,9 +6513,13 @@ _execute_stop (GstValidateScenario * scenario, GstValidateAction * action)
       GstClockTime position = GST_CLOCK_TIME_NONE;
 
       _get_position (scenario, NULL, &position);
+      SCENARIO_UNLOCK (scenario);
+
       GST_VALIDATE_REPORT (scenario, SCENARIO_NOT_ENDED,
           "%i actions were not executed: %s (position: %" GST_TIME_FORMAT
           ")", nb_actions, actions, GST_TIME_ARGS (position));
+
+      SCENARIO_LOCK (scenario);
     }
     g_free (actions);
   }
@@ -6329,8 +6579,8 @@ _action_set_done (GstValidateAction * action)
       _check_scenario_is_done (scenario);
 
       if (!gst_validate_parse_next_action_playback_time (scenario)) {
-        gst_validate_error_structure (scenario->priv->actions ? scenario->
-            priv->actions->data : NULL,
+        gst_validate_error_structure (scenario->priv->actions ? scenario->priv->
+            actions->data : NULL,
             "Could not determine next action playback time!");
       }
 
@@ -6966,6 +7216,20 @@ register_action_types (void)
       "Sends an EOS event to the pipeline",
       GST_VALIDATE_ACTION_TYPE_NO_EXECUTION_NOT_FATAL);
 
+  REGISTER_ACTION_TYPE ("select-streams", _execute_select_streams,
+      ((GstValidateActionParameter []) {
+        {
+          .name = "indexes",
+          .description = "Indexes of the streams in the StreamCollection to select",
+          .mandatory = TRUE,
+          .types = "[int]",
+          .possible_variables = NULL,
+        },
+        {NULL}
+      }),
+      "Select the stream on next `GST_STREAM_COLLECTION` message on the bus.",
+      GST_VALIDATE_ACTION_TYPE_NON_BLOCKING);
+
   REGISTER_ACTION_TYPE ("switch-track", _execute_switch_track,
       ((GstValidateActionParameter []) {
         {
@@ -7020,6 +7284,22 @@ register_action_types (void)
           .description = "The name of the signal to wait for on @target-element-name."
               " To ensure that the signal is executed without blocking while waiting for it"
               " you can set the field 'non-blocking=true'.",
+          .mandatory = FALSE,
+          .types = "string",
+          NULL
+        },
+        {
+          .name = "property-name",
+          .description = "The name of the property to wait for value to be set to what is specified by @property-value.",
+          .mandatory = FALSE,
+          .types = "string",
+          NULL
+        },
+  {
+          .name = "property-value",
+          .description = "The value of the property to be waiting."
+            "\n Example: "
+            "\n `wait, property-name=current-uri, property-value=file:///some/value.mp4, target-element-name=uridecodebin`",
           .mandatory = FALSE,
           .types = "string",
           NULL
