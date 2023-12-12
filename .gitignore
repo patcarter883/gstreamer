@@ -67,3 +67,7 @@ subprojects/*/
 
 # clangd integration
 .cache/*
+
+build/
+builddir/
+env/
