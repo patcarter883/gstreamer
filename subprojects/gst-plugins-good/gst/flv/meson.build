@@ -5,7 +5,7 @@ gstflv = library('gstflv',
   'gstflvdemux.c', 'gstflvmux.c', 'gstflvplugin.c','gstflvelement.c',
   c_args : gst_plugins_good_args,
   include_directories : [configinc, libsinc],
-  dependencies : [gstpbutils_dep, gstvideo_dep, gsttag_dep, gstaudio_dep, gstcodecparsers_dep],
+  dependencies : [gstcodecparsers_dep, gstpbutils_dep, gstvideo_dep, gsttag_dep, gstaudio_dep],
   install : true,
   install_dir : plugins_install_dir,
 )
