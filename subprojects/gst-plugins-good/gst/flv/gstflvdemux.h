@@ -128,6 +128,8 @@ struct _GstFlvDemux
   GstClockTime video_time_offset;
   gdouble framerate;
   guint32 video_bitrate;
+  
+  guint32 fourcc;
 
   gboolean random_access;
   gboolean need_header;
