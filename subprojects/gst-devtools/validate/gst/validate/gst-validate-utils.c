@@ -1267,6 +1267,10 @@ gst_validate_replace_variables_in_string (gpointer source,
       }
 
       if (!var_value) {
+        g_free (varname);
+        g_free (pvarname);
+        g_free (string);
+        g_clear_pointer (&match_info, g_match_info_free);
         if (!(flags & GST_VALIDATE_STRUCTURE_RESOLVE_VARIABLES_NO_FAILURE)) {
           gst_validate_error_structure (source,
               "Trying to use undefined variable `%s`.\n"
@@ -1276,6 +1280,7 @@ gst_validate_replace_variables_in_string (gpointer source,
               varname, gst_structure_to_string (local_vars),
               (flags & GST_VALIDATE_STRUCTURE_RESOLVE_VARIABLES_LOCAL_ONLY) ?
               ": unused" : gst_structure_to_string (global_vars));
+
         }
 
         return NULL;
@@ -1363,6 +1368,19 @@ _structure_set_variables (GQuark field_id, GValue * value, ReplaceData * data)
     for (i = 0; i < gst_value_list_get_size (value); i++)
       _structure_set_variables (0, (GValue *) gst_value_list_get_value (value,
               i), data);
+
+    return TRUE;
+  }
+
+
+  if (GST_VALUE_HOLDS_STRUCTURE (value)) {
+    GstStructure *s = gst_structure_copy (gst_value_get_structure (value));
+
+    gst_validate_structure_resolve_variables (data->source,
+        s, data->local_vars, data->flags);
+
+    gst_value_set_structure (value, s);
+    gst_structure_free (s);
 
     return TRUE;
   }
