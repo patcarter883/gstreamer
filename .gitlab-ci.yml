@@ -446,7 +446,7 @@ build vs2022 amd64:
   script:
     - !reference [".build windows", "script"]
     - meson setup --vsenv build $env:MESON_ARGS
-    - meson compile -C build
+    - meson compile -C build --jobs $env:FDO_CI_CONCURRENT
     - .\gst-env.py gst-inspect-1.0.exe --version
     - .\gst-env.py gst-inspect-1.0.exe
     - mkdir destdir
@@ -455,6 +455,23 @@ build vs2022 amd64:
   variables:
     # FIXME: https://github.com/mesonbuild/meson/pull/11007
     PKG_CONFIG: ${CI_PROJECT_DIR}/subprojects/win-pkgconfig/pkg-config.exe
+
+build vs2022 amd64 full-static:
+  extends: ".build windows"
+  script:
+    - !reference [".build windows", "script"]
+    - echo $env:MESON_ARGS
+    - cmd.exe /C "meson setup --vsenv build --default-library=static $env:MESON_ARGS"
+    - meson compile -C build --jobs $env:FDO_CI_CONCURRENT
+    - .\gst-env.py gst-inspect-1.0.exe --version
+    - .\gst-env.py gst-inspect-1.0.exe
+  variables:
+    MESON_ARGS: >-
+      -Dintrospection=disabled
+      -Dpython=disabled
+      -Dlibav=disabled
+      -Ddoc=disabled
+      -Dgst-full-target-type=static_library
 
 .build windows cross:
   extends: '.build windows'
@@ -465,7 +482,7 @@ build vs2022 amd64:
     - echo $env:MESON_CROSS_ARGS
     - cmd.exe /C "C:\BuildTools\Common7\Tools\VsDevCmd.bat -host_arch=amd64 -arch=$env:ARCH &&
         meson setup build $env:MESON_ARGS $env:MESON_CROSS_ARGS &&
-        meson compile -C build "
+        meson compile -C build --jobs $env:FDO_CI_CONCURRENT"
 
 build vs2022 x86:
   extends: '.build windows cross'
@@ -509,7 +526,7 @@ build msys2:
     - $env:MESON_ARGS = $env:MESON_ARGS.replace('-Dgst-plugins-bad:d3d11-wgc=enabled','') + ' -Dpython=disabled -Dintrospection=disabled'
     # Configure MSYS2 to use the UCRT64 environment, start in the same directory
     # and inherit PATH
-    - C:\msys64\msys2_shell.cmd -ucrt64 -defterm -no-start -here -use-full-path -lc "meson setup build $env:MESON_ARGS && meson compile -C build"
+    - C:\msys64\msys2_shell.cmd -ucrt64 -defterm -no-start -here -use-full-path -lc "meson setup build $env:MESON_ARGS && meson compile -C build --jobs $env:FDO_CI_CONCURRENT"
 
 build macos:
   extends:
