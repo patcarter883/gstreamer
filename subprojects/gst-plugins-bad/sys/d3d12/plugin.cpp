@@ -28,15 +28,26 @@
 #endif
 
 #include <gst/gst.h>
-#include "gstd3d12device.h"
+#include "gstd3d12.h"
+#include "gstd3d12-private.h"
+#include "gstd3d12convert.h"
 #include "gstd3d12download.h"
+#include "gstd3d12upload.h"
+#include "gstd3d12videosink.h"
+#include "gstd3d12testsrc.h"
+#include "gstd3d12compositor.h"
+#include "gstd3d12screencapturedevice.h"
+#include "gstd3d12screencapturesrc.h"
+#include "gstd3d12mpeg2dec.h"
 #include "gstd3d12h264dec.h"
+#include "gstd3d12h264enc.h"
 #include "gstd3d12h265dec.h"
+#include "gstd3d12vp8dec.h"
 #include "gstd3d12vp9dec.h"
 #include "gstd3d12av1dec.h"
-
+#include <windows.h>
+#include <versionhelpers.h>
 #include <wrl.h>
-#include <d3d11_4.h>
 
 /* *INDENT-OFF* */
 using namespace Microsoft::WRL;
@@ -45,22 +56,31 @@ using namespace Microsoft::WRL;
 GST_DEBUG_CATEGORY (gst_d3d12_debug);
 GST_DEBUG_CATEGORY (gst_d3d12_allocator_debug);
 GST_DEBUG_CATEGORY (gst_d3d12_decoder_debug);
-GST_DEBUG_CATEGORY (gst_d3d12_fence_debug);
 GST_DEBUG_CATEGORY (gst_d3d12_format_debug);
 GST_DEBUG_CATEGORY (gst_d3d12_utils_debug);
 
 #define GST_CAT_DEFAULT gst_d3d12_debug
 
+static void
+plugin_deinit (gpointer data)
+{
+  gst_d3d12_sync_background_thread ();
+}
+
 static gboolean
 plugin_init (GstPlugin * plugin)
 {
   GST_DEBUG_CATEGORY_INIT (gst_d3d12_debug, "d3d12", 0, "d3d12");
+
+  if (!IsWindows8OrGreater ()) {
+    GST_WARNING ("Not supported OS");
+    return TRUE;
+  }
+
   GST_DEBUG_CATEGORY_INIT (gst_d3d12_allocator_debug, "d3d12allocator", 0,
       "d3d12allocator");
   GST_DEBUG_CATEGORY_INIT (gst_d3d12_decoder_debug, "d3d12decoder", 0,
       "d3d12decoder");
-  GST_DEBUG_CATEGORY_INIT (gst_d3d12_fence_debug, "d3d12fence", 0,
-      "d3d12fence");
   GST_DEBUG_CATEGORY_INIT (gst_d3d12_format_debug, "d3d12format", 0,
       "d3d12format");
   GST_DEBUG_CATEGORY_INIT (gst_d3d12_utils_debug,
@@ -73,54 +93,60 @@ plugin_init (GstPlugin * plugin)
     GstD3D12Device *device = nullptr;
     ID3D12Device *device_handle;
     ComPtr < ID3D12VideoDevice > video_device;
-    GstD3D11Device *d3d11_device;
     HRESULT hr;
-    gint64 luid;
-    gboolean d3d11_interop = FALSE;
 
     device = gst_d3d12_device_new (i);
     if (!device)
       break;
 
     device_handle = gst_d3d12_device_get_device_handle (device);
+
     hr = device_handle->QueryInterface (IID_PPV_ARGS (&video_device));
     if (FAILED (hr)) {
       gst_object_unref (device);
       continue;
     }
 
-    g_object_get (device, "adapter-luid", &luid, nullptr);
-    d3d11_device = gst_d3d11_device_new_for_adapter_luid (luid,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT);
-
-    /* Enable d3d11 interop only if extended NV12 shared texture feature
-     * is supported by GPU */
-    if (d3d11_device) {
-      ID3D11Device *d3d11_handle =
-          gst_d3d11_device_get_device_handle (d3d11_device);
-      D3D11_FEATURE_DATA_D3D11_OPTIONS4 option4 = { FALSE };
-      hr = d3d11_handle->CheckFeatureSupport (D3D11_FEATURE_D3D11_OPTIONS4,
-          &option4, sizeof (D3D11_FEATURE_DATA_D3D11_OPTIONS4));
-      if (SUCCEEDED (hr) && option4.ExtendedNV12SharedTextureSupported)
-        d3d11_interop = TRUE;
-
-      gst_object_unref (d3d11_device);
-    }
-
+    gst_d3d12_mpeg2_dec_register (plugin, device, video_device.Get (),
+        GST_RANK_NONE);
     gst_d3d12_h264_dec_register (plugin, device, video_device.Get (),
-        GST_RANK_NONE, d3d11_interop);
+        GST_RANK_NONE);
     gst_d3d12_h265_dec_register (plugin, device, video_device.Get (),
-        GST_RANK_NONE, d3d11_interop);
+        GST_RANK_NONE);
+    gst_d3d12_vp8_dec_register (plugin, device, video_device.Get (),
+        GST_RANK_NONE);
     gst_d3d12_vp9_dec_register (plugin, device, video_device.Get (),
-        GST_RANK_NONE, d3d11_interop);
+        GST_RANK_NONE);
     gst_d3d12_av1_dec_register (plugin, device, video_device.Get (),
-        GST_RANK_NONE, d3d11_interop);
+        GST_RANK_NONE);
+
+    gst_d3d12_h264_enc_register (plugin, device, video_device.Get (),
+        GST_RANK_NONE);
 
     gst_object_unref (device);
   }
 
   gst_element_register (plugin,
+      "d3d12convert", GST_RANK_NONE, GST_TYPE_D3D12_CONVERT);
+  gst_element_register (plugin,
       "d3d12download", GST_RANK_NONE, GST_TYPE_D3D12_DOWNLOAD);
+  gst_element_register (plugin,
+      "d3d12upload", GST_RANK_NONE, GST_TYPE_D3D12_UPLOAD);
+  gst_element_register (plugin,
+      "d3d12videosink", GST_RANK_NONE, GST_TYPE_D3D12_VIDEO_SINK);
+  gst_element_register (plugin,
+      "d3d12testsrc", GST_RANK_NONE, GST_TYPE_D3D12_TEST_SRC);
+  gst_element_register (plugin,
+      "d3d12compositor", GST_RANK_NONE, GST_TYPE_D3D12_COMPOSITOR);
+  gst_element_register (plugin, "d3d12screencapturesrc", GST_RANK_NONE,
+      GST_TYPE_D3D12_SCREEN_CAPTURE_SRC);
+  gst_device_provider_register (plugin,
+      "d3d12screencapturedeviceprovider", GST_RANK_PRIMARY,
+      GST_TYPE_D3D12_SCREEN_CAPTURE_DEVICE_PROVIDER);
+
+  g_object_set_data_full (G_OBJECT (plugin),
+      "plugin-d3d12-shutdown", (gpointer) "shutdown-data",
+      (GDestroyNotify) plugin_deinit);
 
   return TRUE;
 }

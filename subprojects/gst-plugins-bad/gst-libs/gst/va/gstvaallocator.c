@@ -42,8 +42,6 @@
 #include <unistd.h>
 #endif
 
-#include <stdio.h>              /* sscanf */
-
 #include "gstvasurfacecopy.h"
 #include "gstvavideoformat.h"
 #include "vasurfaceimage.h"
@@ -393,15 +391,17 @@ gst_va_dmabuf_mem_map (GstMemory * gmem, gsize maxsize, GstMapFlags flags)
   GstVaDmabufAllocator *self = GST_VA_DMABUF_ALLOCATOR (gmem->allocator);
   VASurfaceID surface = gst_va_memory_get_surface (gmem);
 
-  if (self->info.drm_modifier != DRM_FORMAT_MOD_LINEAR) {
-    GST_ERROR_OBJECT (self, "Failed to map the dmabuf because the modifier "
-        "is: %#" G_GINT64_MODIFIER "x, which is not linear.",
-        self->info.drm_modifier);
-    return NULL;
-  }
+  if (flags & GST_MAP_READWRITE) {
+    if (self->info.drm_modifier != DRM_FORMAT_MOD_LINEAR) {
+      GST_ERROR_OBJECT (self, "Failed to map the dmabuf because the modifier "
+          "is: %#" G_GINT64_MODIFIER "x, which is not linear.",
+          self->info.drm_modifier);
+      return NULL;
+    }
 
-  if (!va_sync_surface (self->display, surface))
-    return NULL;
+    if (!va_sync_surface (self->display, surface))
+      return NULL;
+  }
 
   return self->parent_map (gmem, maxsize, flags);
 }
@@ -1192,7 +1192,6 @@ struct _GstVaAllocator
 
   GstVaDisplay *display;
 
-  GstVaFeature feat_use_derived;
   gboolean use_derived;
   GArray *surface_formats;
 
@@ -1323,49 +1322,14 @@ _reset_mem (GstVaMemory * mem, GstAllocator * allocator, gsize size)
       0 /* align */ , 0 /* offset */ , size);
 }
 
-/*
- * HACK:
- *
- * This method should be defined as a public method of GstVaDisplay. But in
- * order to backport this fix, it's kept locally.
- */
-static gboolean
-_gst_va_display_get_vendor_version (GstVaDisplay * display, guint * major,
-    guint * minor)
-{
-  VADisplay dpy;
-  guint maj, min;
-  const char *vendor;
-
-  dpy = gst_va_display_get_va_dpy (display);
-  vendor = vaQueryVendorString (dpy);
-  if (vendor && sscanf (vendor, "Mesa Gallium driver %d.%d.", &maj, &min) == 2) {
-    *major = maj;
-    *minor = min;
-    return TRUE;
-  }
-
-  return FALSE;
-}
-
-static gboolean
+#ifndef G_OS_WIN32
+static inline gboolean
 _is_old_mesa (GstVaAllocator * va_allocator)
 {
-  guint major, minor;
-
-  if (!GST_VA_DISPLAY_IS_IMPLEMENTATION (va_allocator->display, MESA_GALLIUM))
-    return FALSE;
-  if (!_gst_va_display_get_vendor_version (va_allocator->display, &major,
-          &minor)) {
-    GST_WARNING ("Could not parse version from Mesa vendor string");
-    return FALSE;
-  }
-  if (major > 23)
-    return FALSE;
-  if (major == 23 && minor > 2)
-    return FALSE;
-  return TRUE;
+  return GST_VA_DISPLAY_IS_IMPLEMENTATION (va_allocator->display, MESA_GALLIUM)
+      && !gst_va_display_check_version (va_allocator->display, 23, 2);
 }
+#endif /* G_OS_WIN32 */
 
 static inline void
 _update_info (GstVideoInfo * info, const VAImage * image)
@@ -1385,7 +1349,8 @@ _update_info (GstVideoInfo * info, const VAImage * image)
 }
 
 static inline gboolean
-_update_image_info (GstVaAllocator * va_allocator)
+_update_image_info (GstVaAllocator * va_allocator,
+    GstVaFeature feat_use_derived)
 {
   VASurfaceID surface;
   VAImage image = {.image_id = VA_INVALID_ID, };
@@ -1405,9 +1370,9 @@ _update_image_info (GstVaAllocator * va_allocator)
 
 #ifdef G_OS_WIN32
   /* XXX: Derived image is problematic for D3D backend */
-  if (va_allocator->feat_use_derived != GST_VA_FEATURE_DISABLED) {
+  if (feat_use_derived != GST_VA_FEATURE_DISABLED) {
     GST_INFO_OBJECT (va_allocator, "Disable image derive on Windows.");
-    va_allocator->feat_use_derived = GST_VA_FEATURE_DISABLED;
+    feat_use_derived = GST_VA_FEATURE_DISABLED;
   }
   va_allocator->use_derived = FALSE;
 #else
@@ -1416,28 +1381,25 @@ _update_image_info (GstVaAllocator * va_allocator)
    */
   if (va_allocator->img_format == GST_VIDEO_FORMAT_P010_10LE
       && _is_old_mesa (va_allocator)) {
-    if (va_allocator->feat_use_derived != GST_VA_FEATURE_DISABLED) {
+    if (feat_use_derived != GST_VA_FEATURE_DISABLED) {
       GST_INFO_OBJECT (va_allocator, "Disable image derive on old Mesa.");
-      va_allocator->feat_use_derived = GST_VA_FEATURE_DISABLED;
+      feat_use_derived = GST_VA_FEATURE_DISABLED;
     }
     va_allocator->use_derived = FALSE;
   }
 #endif
   /* Try derived first, but different formats can never derive */
-  if (va_allocator->feat_use_derived != GST_VA_FEATURE_DISABLED
+  if (feat_use_derived != GST_VA_FEATURE_DISABLED
       && va_allocator->surface_format == va_allocator->img_format) {
-    if (va_get_derive_image (va_allocator->display, surface, &image)) {
-      va_allocator->use_derived = TRUE;
+    va_allocator->use_derived =
+        va_get_derive_image (va_allocator->display, surface, &image);
+    if (va_allocator->use_derived)
       goto done;
-    }
     image.image_id = VA_INVALID_ID;     /* reset it */
   }
 
-  if (va_allocator->feat_use_derived == GST_VA_FEATURE_ENABLED
-      && !va_allocator->use_derived) {
+  if (feat_use_derived == GST_VA_FEATURE_ENABLED && !va_allocator->use_derived)
     GST_WARNING_OBJECT (va_allocator, "Derived images are disabled.");
-    va_allocator->feat_use_derived = GST_VA_FEATURE_DISABLED;
-  }
 
   /* Then we try to create a image. */
   if (!va_create_image (va_allocator->display, va_allocator->img_format,
@@ -1689,8 +1651,6 @@ gst_va_allocator_init (GstVaAllocator * self)
 
   gst_va_memory_pool_init (&self->pool);
 
-  self->feat_use_derived = GST_VA_FEATURE_AUTO;
-
   GST_OBJECT_FLAG_SET (self, GST_ALLOCATOR_FLAG_CUSTOM_ALLOC);
 }
 
@@ -1890,7 +1850,7 @@ gst_va_allocator_flush (GstAllocator * allocator)
  * Since: 1.22
  */
 static gboolean
-gst_va_allocator_try (GstAllocator * allocator)
+gst_va_allocator_try (GstAllocator * allocator, GstVaFeature feat_use_derived)
 {
   GstVaAllocator *self;
 
@@ -1922,7 +1882,7 @@ gst_va_allocator_try (GstAllocator * allocator)
     return FALSE;
   }
 
-  if (!_update_image_info (self)) {
+  if (!_update_image_info (self, feat_use_derived)) {
     GST_ERROR_OBJECT (allocator, "Failed to update allocator info");
     return FALSE;
   }
@@ -1943,7 +1903,7 @@ gst_va_allocator_try (GstAllocator * allocator)
  * @allocator: a #GstAllocator
  * @info: (inout): a #GstVideoInfo
  * @usage_hint: VA usage hint
- * @use_derived: a #GstVaFeature
+ * @feat_use_derived: a #GstVaFeature
  *
  * Sets the configuration defined by @info, @usage_hint and
  * @use_derived for @allocator, and it tries the configuration, if
@@ -1960,9 +1920,10 @@ gst_va_allocator_try (GstAllocator * allocator)
  */
 gboolean
 gst_va_allocator_set_format (GstAllocator * allocator, GstVideoInfo * info,
-    guint usage_hint, GstVaFeature use_derived)
+    guint usage_hint, GstVaFeature feat_use_derived)
 {
   GstVaAllocator *self;
+  gboolean use_derived;
   gboolean ret;
 
   g_return_val_if_fail (GST_IS_VA_ALLOCATOR (allocator), FALSE);
@@ -1970,12 +1931,14 @@ gst_va_allocator_set_format (GstAllocator * allocator, GstVideoInfo * info,
 
   self = GST_VA_ALLOCATOR (allocator);
 
+  use_derived = feat_use_derived == GST_VA_FEATURE_AUTO ? self->use_derived
+      : feat_use_derived == GST_VA_FEATURE_DISABLED ? FALSE : TRUE;
+
   if (gst_va_memory_pool_surface_count (&self->pool) != 0) {
     if (GST_VIDEO_INFO_FORMAT (info) == GST_VIDEO_INFO_FORMAT (&self->info)
         && GST_VIDEO_INFO_WIDTH (info) == GST_VIDEO_INFO_WIDTH (&self->info)
         && GST_VIDEO_INFO_HEIGHT (info) == GST_VIDEO_INFO_HEIGHT (&self->info)
-        && usage_hint == self->usage_hint
-        && use_derived == self->feat_use_derived) {
+        && usage_hint == self->usage_hint && use_derived == self->use_derived) {
       *info = self->info;       /* update callee info (offset & stride) */
       return TRUE;
     }
@@ -1983,12 +1946,11 @@ gst_va_allocator_set_format (GstAllocator * allocator, GstVideoInfo * info,
   }
 
   self->usage_hint = usage_hint;
-  self->feat_use_derived = use_derived;
   self->info = *info;
 
   g_clear_pointer (&self->copy, gst_va_surface_copy_free);
 
-  ret = gst_va_allocator_try (allocator);
+  ret = gst_va_allocator_try (allocator, feat_use_derived);
   if (ret)
     *info = self->info;
 
@@ -2000,8 +1962,8 @@ gst_va_allocator_set_format (GstAllocator * allocator, GstVideoInfo * info,
  * @allocator: a #GstAllocator
  * @info: (out) (optional): a #GstVideoInfo
  * @usage_hint: (out) (optional): VA usage hint
- * @use_derived: (out) (optional): a #GstVaFeature if derived images
- *     are used for buffer mapping.
+ * @use_derived: (out) (optional): whether derived images are used for buffer
+ *     mapping.
  *
  * Gets current internal configuration of @allocator.
  *
@@ -2012,7 +1974,7 @@ gst_va_allocator_set_format (GstAllocator * allocator, GstVideoInfo * info,
  */
 gboolean
 gst_va_allocator_get_format (GstAllocator * allocator, GstVideoInfo * info,
-    guint * usage_hint, GstVaFeature * use_derived)
+    guint * usage_hint, gboolean * use_derived)
 {
   GstVaAllocator *self;
 
@@ -2027,7 +1989,7 @@ gst_va_allocator_get_format (GstAllocator * allocator, GstVideoInfo * info,
   if (usage_hint)
     *usage_hint = self->usage_hint;
   if (use_derived)
-    *use_derived = self->feat_use_derived;
+    *use_derived = self->use_derived;
 
   return TRUE;
 }

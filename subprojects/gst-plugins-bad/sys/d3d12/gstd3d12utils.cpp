@@ -21,9 +21,9 @@
 #include "config.h"
 #endif
 
-#include "gstd3d12utils.h"
-#include "gstd3d12device.h"
+#include "gstd3d12.h"
 #include <mutex>
+#include <atomic>
 
 /* *INDENT-OFF* */
 static std::recursive_mutex context_lock_;
@@ -399,7 +399,16 @@ gst_d3d12_context_new (GstD3D12Device * device)
   context_set_d3d12_device (context, device);
 
   return context;
+}
 
+gint64
+gst_d3d12_create_user_token (void)
+{
+  /* *INDENT-OFF* */
+  static std::atomic<gint64> user_token { 0 };
+  /* *INDENT-ON* */
+
+  return user_token.fetch_add (1);
 }
 
 gboolean
@@ -431,12 +440,4 @@ _gst_d3d12_result (HRESULT hr, GstD3D12Device * device, GstDebugCategory * cat,
 #else
   return SUCCEEDED (hr);
 #endif
-}
-
-guint
-gst_d3d12_calculate_subresource (guint mip_slice, guint array_slice,
-    guint plane_slice, guint mip_level, guint array_size)
-{
-  return mip_slice + array_slice * mip_level +
-      plane_slice * mip_level * array_size;
 }

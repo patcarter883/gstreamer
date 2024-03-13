@@ -21,9 +21,9 @@
 #include "config.h"
 #endif
 
-#include "gstd3d12device.h"
-#include "gstd3d12bufferpool.h"
-#include "gstd3d12utils.h"
+#include "gstd3d12.h"
+#include "gstd3d12memory-private.h"
+#include <directx/d3dx12.h>
 
 GST_DEBUG_CATEGORY_STATIC (gst_d3d12_buffer_pool_debug);
 #define GST_CAT_DEFAULT gst_d3d12_buffer_pool_debug
@@ -48,22 +48,25 @@ static gboolean gst_d3d12_buffer_pool_set_config (GstBufferPool * pool,
     GstStructure * config);
 static GstFlowReturn gst_d3d12_buffer_pool_alloc_buffer (GstBufferPool * pool,
     GstBuffer ** buffer, GstBufferPoolAcquireParams * params);
+static GstFlowReturn gst_d3d12_buffer_pool_acquire_buffer (GstBufferPool * pool,
+    GstBuffer ** buffer, GstBufferPoolAcquireParams * params);
 static gboolean gst_d3d12_buffer_pool_start (GstBufferPool * pool);
 static gboolean gst_d3d12_buffer_pool_stop (GstBufferPool * pool);
 
 static void
 gst_d3d12_buffer_pool_class_init (GstD3D12BufferPoolClass * klass)
 {
-  GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
-  GstBufferPoolClass *bufferpool_class = GST_BUFFER_POOL_CLASS (klass);
+  auto object_class = G_OBJECT_CLASS (klass);
+  auto pool_class = GST_BUFFER_POOL_CLASS (klass);
 
-  gobject_class->dispose = gst_d3d12_buffer_pool_dispose;
+  object_class->dispose = gst_d3d12_buffer_pool_dispose;
 
-  bufferpool_class->get_options = gst_d3d12_buffer_pool_get_options;
-  bufferpool_class->set_config = gst_d3d12_buffer_pool_set_config;
-  bufferpool_class->alloc_buffer = gst_d3d12_buffer_pool_alloc_buffer;
-  bufferpool_class->start = gst_d3d12_buffer_pool_start;
-  bufferpool_class->stop = gst_d3d12_buffer_pool_stop;
+  pool_class->get_options = gst_d3d12_buffer_pool_get_options;
+  pool_class->set_config = gst_d3d12_buffer_pool_set_config;
+  pool_class->alloc_buffer = gst_d3d12_buffer_pool_alloc_buffer;
+  pool_class->acquire_buffer = gst_d3d12_buffer_pool_acquire_buffer;
+  pool_class->start = gst_d3d12_buffer_pool_start;
+  pool_class->stop = gst_d3d12_buffer_pool_stop;
 
   GST_DEBUG_CATEGORY_INIT (gst_d3d12_buffer_pool_debug, "d3d12bufferpool", 0,
       "d3d12bufferpool");
@@ -79,7 +82,7 @@ gst_d3d12_buffer_pool_init (GstD3D12BufferPool * self)
 static void
 gst_d3d12_buffer_pool_clear_allocator (GstD3D12BufferPool * self)
 {
-  GstD3D12BufferPoolPrivate *priv = self->priv;
+  auto priv = self->priv;
   guint i;
 
   for (i = 0; i < G_N_ELEMENTS (priv->alloc); i++) {
@@ -93,8 +96,8 @@ gst_d3d12_buffer_pool_clear_allocator (GstD3D12BufferPool * self)
 static void
 gst_d3d12_buffer_pool_dispose (GObject * object)
 {
-  GstD3D12BufferPool *self = GST_D3D12_BUFFER_POOL (object);
-  GstD3D12BufferPoolPrivate *priv = self->priv;
+  auto self = GST_D3D12_BUFFER_POOL (object);
+  auto priv = self->priv;
 
   g_clear_pointer (&priv->d3d12_params, gst_d3d12_allocation_params_free);
   gst_clear_object (&self->device);
@@ -116,18 +119,14 @@ gst_d3d12_buffer_pool_get_options (GstBufferPool * pool)
 static gboolean
 gst_d3d12_buffer_pool_set_config (GstBufferPool * pool, GstStructure * config)
 {
-  GstD3D12BufferPool *self = GST_D3D12_BUFFER_POOL (pool);
-  GstD3D12BufferPoolPrivate *priv = self->priv;
+  auto self = GST_D3D12_BUFFER_POOL (pool);
+  auto priv = self->priv;
   GstVideoInfo info;
   GstCaps *caps = nullptr;
   guint min_buffers, max_buffers;
-  gboolean ret = TRUE;
-  guint align = 0;
-  D3D12_RESOURCE_DESC *desc;
+  D3D12_RESOURCE_DESC desc[GST_VIDEO_MAX_PLANES];
   D3D12_HEAP_PROPERTIES heap_props =
-      CD3D12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_DEFAULT);
-  guint plane_index = 0;
-  gsize mem_size = 0;
+      CD3DX12_HEAP_PROPERTIES (D3D12_HEAP_TYPE_DEFAULT);
 
   if (!gst_buffer_pool_config_get_params (config, &caps, nullptr, &min_buffers,
           &max_buffers)) {
@@ -164,129 +163,95 @@ gst_d3d12_buffer_pool_set_config (GstBufferPool * pool, GstStructure * config)
         D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS);
   }
 
-  desc = priv->d3d12_params->desc;
-  switch (desc[0].Format) {
-    case DXGI_FORMAT_NV12:
-    case DXGI_FORMAT_P010:
-    case DXGI_FORMAT_P016:
-      align = 2;
-      break;
-    default:
-      break;
-  }
+  auto device = gst_d3d12_device_get_device_handle (self->device);
+  const auto params = priv->d3d12_params;
+  memset (desc, 0, sizeof (desc));
 
-  /* resolution of semi-planar formats must be multiple of 2 */
-  if (align != 0 && (desc[0].Width % align || desc[0].Height % align)) {
-    gint width, height;
-    GstVideoAlignment video_align;
+  gsize total_mem_size = 0;
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout[GST_VIDEO_MAX_PLANES];
+  if (params->d3d12_format.dxgi_format != DXGI_FORMAT_UNKNOWN) {
+    desc[0] = CD3DX12_RESOURCE_DESC::Tex2D (params->d3d12_format.dxgi_format,
+        params->aligned_info.width, params->aligned_info.height,
+        params->array_size, 1, 1, 0, params->resource_flags);
+    switch (params->d3d12_format.dxgi_format) {
+      case DXGI_FORMAT_NV12:
+      case DXGI_FORMAT_P010:
+      case DXGI_FORMAT_P016:
+        desc[0].Width = GST_ROUND_UP_2 (desc[0].Width);
+        desc[0].Height = GST_ROUND_UP_2 (desc[0].Height);
+        break;
+      case DXGI_FORMAT_Y210:
+      case DXGI_FORMAT_Y216:
+        desc[0].Width = GST_ROUND_UP_2 (desc[0].Width);
+        break;
+      default:
+        break;
+    }
 
-    GST_WARNING_OBJECT (self, "Resolution %" G_GUINT64_FORMAT
-        "x%d is not mutiple of %d, fixing", desc[0].Width, desc[0].Height,
-        align);
+    auto alloc = (GstD3D12Allocator *)
+        gst_d3d12_pool_allocator_new (self->device,
+        &heap_props, params->heap_flags, &desc[0],
+        D3D12_RESOURCE_STATE_COMMON, nullptr);
+    auto num_planes = D3D12GetFormatPlaneCount (device,
+        params->d3d12_format.dxgi_format);
+    for (guint i = 0; i < num_planes; i++) {
+      UINT64 mem_size;
+      device->GetCopyableFootprints (&desc[0], i, 1, 0,
+          &layout[i], nullptr, nullptr, &mem_size);
 
-    width = GST_ROUND_UP_N ((guint) desc[0].Width, align);
-    height = GST_ROUND_UP_N ((guint) desc[0].Height, align);
+      priv->stride[i] = layout[i].Footprint.RowPitch;
+      priv->offset[i] = total_mem_size;
+      total_mem_size += mem_size;
+    }
 
-    gst_video_alignment_reset (&video_align);
-    video_align.padding_right = width - desc[0].Width;
-    video_align.padding_bottom = height - desc[0].Height;
-
-    gst_d3d12_allocation_params_alignment (priv->d3d12_params, &video_align);
-  }
-
-  if ((priv->d3d12_params->flags & GST_D3D12_ALLOCATION_FLAG_TEXTURE_ARRAY)) {
-    guint max_array_size = 0;
-
+    priv->alloc[0] = alloc;
+  } else {
     for (guint i = 0; i < GST_VIDEO_MAX_PLANES; i++) {
-      if (desc[i].Format == DXGI_FORMAT_UNKNOWN)
+      if (params->d3d12_format.resource_format[i] == DXGI_FORMAT_UNKNOWN)
         break;
 
-      if (desc[i].DepthOrArraySize > max_array_size)
-        max_array_size = desc[i].DepthOrArraySize;
-    }
+      desc[i] =
+          CD3DX12_RESOURCE_DESC::Tex2D (params->d3d12_format.resource_format[i],
+          GST_VIDEO_INFO_COMP_WIDTH (&params->aligned_info, i),
+          GST_VIDEO_INFO_COMP_HEIGHT (&params->aligned_info, i),
+          params->array_size, 1, 1, 0, params->resource_flags);
 
-    if (max_buffers == 0 || max_buffers > max_array_size) {
-      GST_WARNING_OBJECT (self,
-          "Array pool is requested but allowed pool size %d > ArraySize %d",
-          max_buffers, max_array_size);
-      max_buffers = max_array_size;
+      auto alloc = (GstD3D12Allocator *)
+          gst_d3d12_pool_allocator_new (self->device,
+          &heap_props, params->heap_flags, &desc[i],
+          D3D12_RESOURCE_STATE_COMMON, nullptr);
+
+      UINT64 mem_size;
+      device->GetCopyableFootprints (&desc[i], 0, 1, 0,
+          &layout[i], nullptr, nullptr, &mem_size);
+
+      priv->stride[i] = layout[i].Footprint.RowPitch;
+      priv->offset[i] = total_mem_size;
+      total_mem_size += mem_size;
+
+      priv->alloc[i] = alloc;
     }
   }
 
-  for (guint i = 0; i < GST_VIDEO_MAX_PLANES; i++) {
-    GstD3D12Allocator *alloc;
-    GstD3D12PoolAllocator *pool_alloc;
-    GstFlowReturn flow_ret;
-    GstMemory *mem = nullptr;
-    GstD3D12Memory *dmem;
-    gint stride = 0;
-    gsize offset = 0;
-    guint plane_count = 0;
-
-    if (desc[i].Format == DXGI_FORMAT_UNKNOWN)
-      break;
-
-    alloc =
-        (GstD3D12Allocator *) gst_d3d12_pool_allocator_new (self->device,
-        &heap_props, D3D12_HEAP_FLAG_NONE, &desc[i],
-        D3D12_RESOURCE_STATE_COMMON, nullptr);
-    if (!gst_d3d12_allocator_set_active (alloc, TRUE)) {
-      GST_ERROR_OBJECT (self, "Failed to activate allocator");
-      gst_object_unref (alloc);
-      return FALSE;
-    }
-
-    pool_alloc = GST_D3D12_POOL_ALLOCATOR (alloc);
-    flow_ret = gst_d3d12_pool_allocator_acquire_memory (pool_alloc, &mem);
-    if (flow_ret != GST_FLOW_OK) {
-      GST_ERROR_OBJECT (self, "Failed to allocate initial memory");
-      gst_d3d12_allocator_set_active (alloc, FALSE);
-      gst_object_unref (alloc);
-      return FALSE;
-    }
-
-    dmem = GST_D3D12_MEMORY_CAST (mem);
-
-    plane_count = gst_d3d12_memory_get_plane_count (dmem);
-    for (guint j = 0; j < plane_count; j++) {
-      if (!gst_d3d12_memory_get_plane_size (dmem, j,
-              nullptr, nullptr, &stride, &offset)) {
-        GST_ERROR_OBJECT (self, "Failed to calculate stride");
-
-        gst_d3d12_allocator_set_active (alloc, FALSE);
-        gst_object_unref (alloc);
-        gst_memory_unref (mem);
-
-        return FALSE;
-      }
-
-      g_assert (plane_index < GST_VIDEO_MAX_PLANES);
-      priv->stride[plane_index] = stride;
-      priv->offset[plane_index] = offset;
-      plane_index++;
-    }
-
-    priv->alloc[i] = alloc;
-    mem_size += mem->size;
-    gst_memory_unref (mem);
-  }
+  if (params->array_size > 1)
+    max_buffers = params->array_size;
 
   gst_buffer_pool_config_set_params (config,
-      caps, mem_size, min_buffers, max_buffers);
+      caps, total_mem_size, min_buffers, max_buffers);
 
-  return GST_BUFFER_POOL_CLASS (parent_class)->set_config (pool, config) && ret;
+  return GST_BUFFER_POOL_CLASS (parent_class)->set_config (pool, config);
 }
 
 static GstFlowReturn
 gst_d3d12_buffer_pool_fill_buffer (GstD3D12BufferPool * self, GstBuffer * buf)
 {
-  GstD3D12BufferPoolPrivate *priv = self->priv;
+  auto priv = self->priv;
   GstFlowReturn ret = GST_FLOW_OK;
   guint i;
 
   for (i = 0; i < G_N_ELEMENTS (priv->alloc); i++) {
     GstMemory *mem = nullptr;
-    GstD3D12PoolAllocator *alloc = GST_D3D12_POOL_ALLOCATOR (priv->alloc[i]);
+    auto alloc = (GstD3D12PoolAllocator *) priv->alloc[i];
 
     if (!alloc)
       break;
@@ -298,6 +263,9 @@ gst_d3d12_buffer_pool_fill_buffer (GstD3D12BufferPool * self, GstBuffer * buf)
       return ret;
     }
 
+    auto dmem = (GstD3D12Memory *) mem;
+    GST_MINI_OBJECT_FLAG_UNSET (dmem, GST_D3D12_MEMORY_TRANSFER_NEED_UPLOAD);
+    gst_d3d12_memory_sync (dmem);
     gst_buffer_append_memory (buf, mem);
   }
 
@@ -308,8 +276,8 @@ static GstFlowReturn
 gst_d3d12_buffer_pool_alloc_buffer (GstBufferPool * pool, GstBuffer ** buffer,
     GstBufferPoolAcquireParams * params)
 {
-  GstD3D12BufferPool *self = GST_D3D12_BUFFER_POOL (pool);
-  GstD3D12BufferPoolPrivate *priv = self->priv;
+  auto self = GST_D3D12_BUFFER_POOL (pool);
+  auto priv = self->priv;
   GstD3D12AllocationParams *d3d12_params = priv->d3d12_params;
   GstVideoInfo *info = &d3d12_params->info;
   GstBuffer *buf;
@@ -332,13 +300,30 @@ gst_d3d12_buffer_pool_alloc_buffer (GstBufferPool * pool, GstBuffer ** buffer,
   return GST_FLOW_OK;
 }
 
+static GstFlowReturn
+gst_d3d12_buffer_pool_acquire_buffer (GstBufferPool * pool,
+    GstBuffer ** buffer, GstBufferPoolAcquireParams * params)
+{
+  GstFlowReturn ret;
+
+  ret = GST_BUFFER_POOL_CLASS (parent_class)->acquire_buffer (pool,
+      buffer, params);
+  if (ret != GST_FLOW_OK)
+    return ret;
+
+  auto mem = (GstD3D12Memory *) gst_buffer_peek_memory (*buffer, 0);
+  GST_MINI_OBJECT_FLAG_UNSET (mem, GST_D3D12_MEMORY_TRANSFER_NEED_UPLOAD);
+  gst_d3d12_memory_sync (mem);
+
+  return ret;
+}
+
 static gboolean
 gst_d3d12_buffer_pool_start (GstBufferPool * pool)
 {
-  GstD3D12BufferPool *self = GST_D3D12_BUFFER_POOL (pool);
-  GstD3D12BufferPoolPrivate *priv = self->priv;
+  auto self = GST_D3D12_BUFFER_POOL (pool);
+  auto priv = self->priv;
   guint i;
-  gboolean ret;
 
   GST_DEBUG_OBJECT (self, "Start");
 
@@ -354,30 +339,14 @@ gst_d3d12_buffer_pool_start (GstBufferPool * pool)
     }
   }
 
-  ret = GST_BUFFER_POOL_CLASS (parent_class)->start (pool);
-  if (!ret) {
-    GST_ERROR_OBJECT (self, "Failed to start");
-
-    for (i = 0; i < G_N_ELEMENTS (priv->alloc); i++) {
-      GstD3D12Allocator *alloc = priv->alloc[i];
-
-      if (!alloc)
-        break;
-
-      gst_d3d12_allocator_set_active (alloc, FALSE);
-    }
-
-    return FALSE;
-  }
-
   return TRUE;
 }
 
 static gboolean
 gst_d3d12_buffer_pool_stop (GstBufferPool * pool)
 {
-  GstD3D12BufferPool *self = GST_D3D12_BUFFER_POOL (pool);
-  GstD3D12BufferPoolPrivate *priv = self->priv;
+  auto self = GST_D3D12_BUFFER_POOL (pool);
+  auto priv = self->priv;
   guint i;
 
   GST_DEBUG_OBJECT (self, "Stop");
@@ -400,11 +369,9 @@ gst_d3d12_buffer_pool_stop (GstBufferPool * pool)
 GstBufferPool *
 gst_d3d12_buffer_pool_new (GstD3D12Device * device)
 {
-  GstD3D12BufferPool *self;
-
   g_return_val_if_fail (GST_IS_D3D12_DEVICE (device), nullptr);
 
-  self = (GstD3D12BufferPool *)
+  auto self = (GstD3D12BufferPool *)
       g_object_new (GST_TYPE_D3D12_BUFFER_POOL, nullptr);
   gst_object_ref_sink (self);
 

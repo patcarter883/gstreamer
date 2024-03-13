@@ -1,43 +1,118 @@
 d3d12_sources = [
+  'gstd3d11on12.cpp',
   'gstd3d12av1dec.cpp',
   'gstd3d12basefilter.cpp',
   'gstd3d12bufferpool.cpp',
+  'gstd3d12commandallocatorpool.cpp',
+  'gstd3d12commandlistpool.cpp',
+  'gstd3d12commandqueue.cpp',
+  'gstd3d12compositor.cpp',
+  'gstd3d12converter-builder.cpp',
+  'gstd3d12converter.cpp',
+  'gstd3d12convert.cpp',
   'gstd3d12decoder.cpp',
+  'gstd3d12descriptorpool.cpp',
   'gstd3d12device.cpp',
   'gstd3d12download.cpp',
-  'gstd3d12fence.cpp',
+  'gstd3d12dpbstorage.cpp',
+  'gstd3d12dxgicapture.cpp',
+  'gstd3d12encoder.cpp',
+  'gstd3d12encoderbufferpool.cpp',
+  'gstd3d12fencedatapool.cpp',
   'gstd3d12format.cpp',
+  'gstd3d12graphicscapture.cpp',
   'gstd3d12h264dec.cpp',
+  'gstd3d12h264enc.cpp',
   'gstd3d12h265dec.cpp',
   'gstd3d12memory.cpp',
+  'gstd3d12mpeg2dec.cpp',
+  'gstd3d12overlaycompositor.cpp',
+  'gstd3d12pluginutils.cpp',
+  'gstd3d12screencapture.cpp',
+  'gstd3d12screencapturedevice.cpp',
+  'gstd3d12screencapturesrc.cpp',
+  'gstd3d12testsrc.cpp',
+  'gstd3d12upload.cpp',
   'gstd3d12utils.cpp',
+  'gstd3d12videosink.cpp',
+  'gstd3d12vp8dec.cpp',
   'gstd3d12vp9dec.cpp',
+  'gstd3d12window.cpp',
   'plugin.cpp',
 ]
 
-extra_args = ['-DGST_USE_UNSTABLE_API']
-extra_dep = []
+hlsl_precompiled = []
+
+extra_args = [
+  '-DGST_USE_UNSTABLE_API',
+  # Disable this warning error. Otherwise d3dx12.h will break build
+  '/wd4062',
+]
 
 d3d12_option = get_option('d3d12')
 if host_system != 'windows' or d3d12_option.disabled()
   subdir_done()
 endif
 
-d3d12_lib = cc.find_library('d3d12', required : d3d12_option)
-dxgi_lib = cc.find_library('dxgi', required : d3d12_option)
-
-if not gstdxva_dep.found() or not gstd3d11_dep.found() or not d3d12_lib.found() or not dxgi_lib.found()
+if cc.get_id() != 'msvc'
   if d3d12_option.enabled()
-    error('The d3d12 was enabled explicitly, but required GstD3D11 dependencies were not found.')
+    error('d3d12 plugin supports only MSVC build')
+  endif
+  subdir_done()
+endif
+
+d3d12_lib = cc.find_library('d3d12', required : d3d12_option)
+d3d11_lib = cc.find_library('d3d11', required : d3d12_option)
+d2d_dep = cc.find_library('d2d1', required: d3d12_option)
+dxgi_lib = cc.find_library('dxgi', required : d3d12_option)
+dwmapi_lib = cc.find_library('dwmapi', required: d3d12_option)
+dx_headers_dep = dependency('DirectX-Headers',
+    version: '>= 1.611',
+    allow_fallback: true,
+    required: d3d12_option)
+dxc = find_program('dxc', required : d3d12_option)
+
+if not gstdxva_dep.found() or not d3d12_lib.found() or not dxgi_lib.found() \
+  or not dx_headers_dep.found() or not dxc.found() or not d2d_dep.found() \
+  or not dwmapi_lib.found()
+  if d3d12_option.enabled()
+    error('The d3d12 was enabled explicitly, but required dependencies were not found.')
+  endif
+  subdir_done()
+endif
+
+have_wgc = cxx.compiles('''
+    #include<windows.h>
+    #include<winstring.h>
+    #include<roapi.h>
+    #include<windows.graphics.capture.h>,
+    #include<windows.graphics.capture.interop.h>
+    #include<windows.graphics.directx.direct3d11.h>
+    #include<windows.graphics.directx.direct3d11.interop.h>
+    #include<wrl.h>
+    using namespace Microsoft::WRL;
+    using namespace ABI::Windows::Graphics::Capture;
+    ComPtr<IDirect3D11CaptureFramePoolStatics> pool_statics;
+    ComPtr<IDirect3D11CaptureFramePool> pool;
+    ComPtr<IGraphicsCaptureSession> session;
+    ComPtr<IGraphicsCaptureSession2> session2;
+    ComPtr<IGraphicsCaptureSession3> session3;
+    ''',
+    name: 'Windows Graphics Capture support in Windows SDK')
+
+if not have_wgc
+  if d3d12_option.enabled()
+    error('Windows SDK does not support Windows Graphics Capture')
   endif
   subdir_done()
 endif
 
 d3d12_headers = [
-  'd3d12.h',
-  'd3d12video.h',
   'dxgi1_6.h',
-  'wrl.h',
+  'd3d11.h',
+  'd3d11on12.h',
+  'd2d1.h',
+  'DirectXMath.h',
 ]
 
 have_d3d12_headers = true
@@ -54,30 +129,23 @@ if not have_d3d12_headers
   subdir_done()
 endif
 
-if not gst_debug_disabled and cc.has_header('d3d12sdklayers.h')
-  extra_args += ['-DHAVE_D3D12_SDKLAYERS_H']
-  if cc.has_header_symbol('d3d12sdklayers.h', 'ID3D12Debug5')
-    extra_args += ['-DHAVE_D3D12DEBUG5']
-  endif
-endif
+hlsl_precompiled = []
+subdir('hlsl')
 
-# MinGW 32bits compiler seems to be complaining about redundant-decls
-# when ComPtr is in use. Let's just disable the warning
-if cc.get_id() != 'msvc'
-  extra_mingw_args = cc.get_supported_arguments([
-    '-Wno-redundant-decls',
-  ])
-
-  extra_args += extra_mingw_args
+# https://learn.microsoft.com/en-us/windows/win32/dxmath/pg-xnamath-internals#windows-sse-versus-sse2
+# x86 with Windows 7 or older may not support SSE2
+if host_machine.cpu_family() != 'x86'
+  extra_args += ['-DHAVE_DIRECTX_MATH_SIMD']
 endif
 
 gstd3d12 = library('gstd3d12',
-  d3d12_sources,
+  d3d12_sources + hlsl_precompiled,
   c_args : gst_plugins_bad_args + extra_args,
   cpp_args: gst_plugins_bad_args + extra_args,
   include_directories : [configinc],
-  dependencies : [gstbase_dep, gstvideo_dep, gstcodecs_dep,
-                  gstdxva_dep, gstd3d11_dep, d3d12_lib, dxgi_lib],
+  dependencies : [gstbase_dep, gstvideo_dep, gstcodecs_dep, gmodule_dep,
+                  gstdxva_dep, d3d12_lib, d3d11_lib, d2d_dep, dxgi_lib,
+                  dx_headers_dep, dwmapi_lib],
   install : true,
   install_dir : plugins_install_dir,
 )

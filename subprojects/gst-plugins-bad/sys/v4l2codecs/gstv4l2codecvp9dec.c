@@ -271,22 +271,22 @@ gst_v4l2_codecs_vp9_dec_fill_refs (GstV4l2CodecVp9Dec * self,
 {
   GstVp9Picture *ref_pic;
 
-  if (reference_frames && reference_frames->pic_list[h->ref_frame_idx[0]]) {
+  if (!reference_frames)
+    return;
+
+  if (reference_frames->pic_list[h->ref_frame_idx[0]]) {
     ref_pic = reference_frames->pic_list[h->ref_frame_idx[0]];
-    self->v4l2_vp9_frame.last_frame_ts =
-        GST_CODEC_PICTURE_FRAME_NUMBER (ref_pic) * 1000;
+    self->v4l2_vp9_frame.last_frame_ts = GST_CODEC_PICTURE_TS_NS (ref_pic);
   }
 
-  if (reference_frames && reference_frames->pic_list[h->ref_frame_idx[1]]) {
+  if (reference_frames->pic_list[h->ref_frame_idx[1]]) {
     ref_pic = reference_frames->pic_list[h->ref_frame_idx[1]];
-    self->v4l2_vp9_frame.golden_frame_ts =
-        GST_CODEC_PICTURE_FRAME_NUMBER (ref_pic) * 1000;
+    self->v4l2_vp9_frame.golden_frame_ts = GST_CODEC_PICTURE_TS_NS (ref_pic);
   }
 
-  if (reference_frames && reference_frames->pic_list[h->ref_frame_idx[2]]) {
+  if (reference_frames->pic_list[h->ref_frame_idx[2]]) {
     ref_pic = reference_frames->pic_list[h->ref_frame_idx[2]];
-    self->v4l2_vp9_frame.alt_frame_ts =
-        GST_CODEC_PICTURE_FRAME_NUMBER (ref_pic) * 1000;
+    self->v4l2_vp9_frame.alt_frame_ts = GST_CODEC_PICTURE_TS_NS (ref_pic);
   }
 }
 
@@ -553,6 +553,11 @@ gst_v4l2_codec_vp9_dec_decide_allocation (GstVideoDecoder * decoder,
   guint min = 0;
   guint num_bitstream;
 
+  /* If we are streaming here, then it means there is nothing allocation
+   * related in the new state and allocation can be ignored */
+  if (self->streaming)
+    goto no_internal_changes;
+
   self->has_videometa = gst_query_find_allocation_meta (query,
       GST_VIDEO_META_API_TYPE, NULL);
 
@@ -586,6 +591,7 @@ gst_v4l2_codec_vp9_dec_decide_allocation (GstVideoDecoder * decoder,
 
   self->src_pool = gst_v4l2_codec_pool_new (self->src_allocator, &self->vinfo);
 
+no_internal_changes:
   /* Our buffer pool is internal, we will let the base class create a video
    * pool, and use it if we are running out of buffers or if downstream does
    * not support GstVideoMeta */
