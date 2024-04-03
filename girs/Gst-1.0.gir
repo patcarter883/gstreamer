@@ -5759,6 +5759,45 @@ message should not be unreffed by the sync handler.</doc>
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstbus.h">pass message to async queue, continue if message is handled</doc>
       </member>
     </enumeration>
+    <record name="ByteArrayInterface" c:type="GstByteArrayInterface" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstbytearrayinterface.h">Interface for an array of bytes. It is expected to be subclassed to implement
+@resize virtual method using language native array implementation, such as
+GLib's #GByteArray, C++'s `std::vector&lt;uint8_t&gt;` or Rust's `Vec&lt;u8&gt;`.
+
+@resize implementation could allocate more than requested to avoid repeated
+reallocations. It can return %FALSE, or be set to %NULL, in the case the
+array cannot grow.</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstbytearrayinterface.h"/>
+      <field name="data" writable="1">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstbytearrayinterface.h">A pointer to an array of bytes.</doc>
+        <type name="guint8" c:type="guint8*"/>
+      </field>
+      <field name="len" writable="1">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstbytearrayinterface.h">Number of bytes in @data.</doc>
+        <type name="gsize" c:type="gsize"/>
+      </field>
+      <field name="resize">
+        <callback name="resize">
+          <source-position filename="../subprojects/gstreamer/gst/gstbytearrayinterface.h"/>
+          <return-value transfer-ownership="none">
+            <type name="gboolean" c:type="gboolean"/>
+          </return-value>
+          <parameters>
+            <parameter name="self" transfer-ownership="none">
+              <type name="ByteArrayInterface" c:type="GstByteArrayInterface*"/>
+            </parameter>
+            <parameter name="length" transfer-ownership="none">
+              <type name="gsize" c:type="gsize"/>
+            </parameter>
+          </parameters>
+        </callback>
+      </field>
+      <field name="_gst_reserved" readable="0" private="1">
+        <array zero-terminated="0" fixed-size="4">
+          <type name="gpointer" c:type="gpointer"/>
+        </array>
+      </field>
+    </record>
     <function-macro name="CALL_PARENT" c:identifier="GST_CALL_PARENT" introspectable="0">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.h">Just call the parent handler.  This assumes that there is a variable
 named parent_class that points to the (duh!) parent class.  Note that
@@ -10524,7 +10563,11 @@ this functionality yet.</doc>
     </enumeration>
     <record name="CustomMeta" c:type="GstCustomMeta" version="1.20">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Extra custom metadata. The @structure field is the same as returned by
-gst_custom_meta_get_structure().</doc>
+gst_custom_meta_get_structure().
+
+Since 1.24 it can be serialized using gst_meta_serialize() and
+gst_meta_deserialize(), but only if the #GstStructure does not contain any
+fields that cannot be serialized, see %GST_SERIALIZE_FLAG_STRICT.</doc>
       <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
       <field name="meta" writable="1">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">parent #GstMeta</doc>
@@ -22121,16 +22164,6 @@ In hindsight, this tag should have been called "memory-layout".</doc>
       <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
       <type name="utf8" c:type="gchar*"/>
     </constant>
-    <function-macro name="META_TRANSFORM_IS_CLEAR" c:identifier="GST_META_TRANSFORM_IS_CLEAR" version="1.24" introspectable="0">
-      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Check if the transform type is clearing the content of the meta without
-freeing it.</doc>
-      <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
-      <parameters>
-        <parameter name="type">
-          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">a transform type</doc>
-        </parameter>
-      </parameters>
-    </function-macro>
     <function-macro name="META_TRANSFORM_IS_COPY" c:identifier="GST_META_TRANSFORM_IS_COPY" introspectable="0">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Check if the transform type is a copy transform</doc>
       <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
@@ -25755,6 +25788,56 @@ or a #GCompareDataFunc.</doc>
           </instance-parameter>
         </parameters>
       </method>
+      <method name="serialize" c:identifier="gst_meta_serialize" version="1.24">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Serialize @meta into a format that can be stored or transmitted and later
+deserialized by gst_meta_deserialize().
+
+This is only supported for meta that implements #GstMetaInfo.serialize_func,
+%FALSE is returned otherwise.
+
+Upon failure, @data-&gt;data pointer could have been reallocated, but @data-&gt;len
+won't be modified. This is intended to be able to append multiple metas
+into the same #GByteArray.
+
+Since serialization size is often the same for every buffer, caller may want
+to remember the size of previous data to preallocate the next.</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+        <return-value transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">%TRUE on success, %FALSE otherwise.</doc>
+          <type name="gboolean" c:type="gboolean"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="meta" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMeta</doc>
+            <type name="Meta" c:type="const GstMeta*"/>
+          </instance-parameter>
+          <parameter name="data" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">#GstByteArrayInterface to append serialization data</doc>
+            <type name="ByteArrayInterface" c:type="GstByteArrayInterface*"/>
+          </parameter>
+        </parameters>
+      </method>
+      <method name="serialize_simple" c:identifier="gst_meta_serialize_simple" version="1.24">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Same as gst_meta_serialize() but with a #GByteArray instead of
+#GstByteArrayInterface.</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+        <return-value transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">%TRUE on success, %FALSE otherwise.</doc>
+          <type name="gboolean" c:type="gboolean"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="meta" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMeta</doc>
+            <type name="Meta" c:type="const GstMeta*"/>
+          </instance-parameter>
+          <parameter name="data" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">#GByteArray to append serialization data</doc>
+            <array name="GLib.ByteArray" c:type="GByteArray*">
+              <type name="guint8" c:type="guint8"/>
+            </array>
+          </parameter>
+        </parameters>
+      </method>
       <function name="api_type_get_tags" c:identifier="gst_meta_api_type_get_tags" version="1.2">
         <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
         <return-value transfer-ownership="none">
@@ -25809,6 +25892,40 @@ or a #GCompareDataFunc.</doc>
           </parameter>
         </parameters>
       </function>
+      <function name="deserialize" c:identifier="gst_meta_deserialize" version="1.24">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Recreate a #GstMeta from serialized data returned by
+gst_meta_serialize() and add it to @buffer.
+
+Note that the meta must have been previously registered by calling one of
+`gst_*_meta_get_info ()` functions.
+
+@consumed is set to the number of bytes that can be skipped from @data to
+find the next meta serialization, if any. In case of parsing error that does
+not allow to determine that size, @consumed is set to 0.</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+        <return-value transfer-ownership="none" nullable="1">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the metadata owned by @buffer, or %NULL.</doc>
+          <type name="Meta" c:type="GstMeta*"/>
+        </return-value>
+        <parameters>
+          <parameter name="buffer" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstBuffer</doc>
+            <type name="Buffer" c:type="GstBuffer*"/>
+          </parameter>
+          <parameter name="data" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">serialization data obtained from gst_meta_serialize()</doc>
+            <type name="guint8" c:type="const guint8*"/>
+          </parameter>
+          <parameter name="size" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">size of @data</doc>
+            <type name="gsize" c:type="gsize"/>
+          </parameter>
+          <parameter name="consumed" direction="out" caller-allocates="0" transfer-ownership="full">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">total size used by this meta, could be less than @size</doc>
+            <type name="guint32" c:type="guint32*"/>
+          </parameter>
+        </parameters>
+      </function>
       <function name="get_info" c:identifier="gst_meta_get_info">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Lookup a previously registered meta info structure by its implementation name
 @impl.</doc>
@@ -25825,7 +25942,7 @@ or a #GCompareDataFunc.</doc>
           </parameter>
         </parameters>
       </function>
-      <function name="register" c:identifier="gst_meta_register">
+      <function name="register" c:identifier="gst_meta_register" introspectable="0">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Register a new #GstMeta implementation.
 
 The same @info can be retrieved later with gst_meta_get_info() by using
@@ -25849,15 +25966,15 @@ access metadata.</doc>
             <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the size of the #GstMeta structure</doc>
             <type name="gsize" c:type="gsize"/>
           </parameter>
-          <parameter name="init_func" transfer-ownership="none" scope="async">
+          <parameter name="init_func" transfer-ownership="none">
             <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMetaInitFunction</doc>
             <type name="MetaInitFunction" c:type="GstMetaInitFunction"/>
           </parameter>
-          <parameter name="free_func" transfer-ownership="none" scope="async">
+          <parameter name="free_func" transfer-ownership="none">
             <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMetaFreeFunction</doc>
             <type name="MetaFreeFunction" c:type="GstMetaFreeFunction"/>
           </parameter>
-          <parameter name="transform_func" transfer-ownership="none" scope="async">
+          <parameter name="transform_func" transfer-ownership="none">
             <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMetaTransformFunction</doc>
             <type name="MetaTransformFunction" c:type="GstMetaTransformFunction"/>
           </parameter>
@@ -25924,6 +26041,54 @@ transform function.</doc>
         </parameters>
       </function>
     </record>
+    <callback name="MetaClearFunction" c:type="GstMetaClearFunction" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Clears the content of the meta. This will be called by the GstBufferPool
+when a pooled buffer is returned.</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+      <return-value transfer-ownership="none">
+        <type name="none" c:type="void"/>
+      </return-value>
+      <parameters>
+        <parameter name="buffer" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">a #GstBuffer</doc>
+          <type name="Buffer" c:type="GstBuffer*"/>
+        </parameter>
+        <parameter name="meta" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">a #GstMeta</doc>
+          <type name="Meta" c:type="GstMeta*"/>
+        </parameter>
+      </parameters>
+    </callback>
+    <callback name="MetaDeserializeFunction" c:type="GstMetaDeserializeFunction" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Recreate a #GstMeta from serialized data returned by
+#GstMetaSerializeFunction and add it to @buffer.</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+      <return-value transfer-ownership="none" nullable="1">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">the metadata owned by @buffer, or %NULL.</doc>
+        <type name="Meta" c:type="GstMeta*"/>
+      </return-value>
+      <parameters>
+        <parameter name="info" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">#GstMetaInfo of the meta</doc>
+          <type name="MetaInfo" c:type="const GstMetaInfo*"/>
+        </parameter>
+        <parameter name="buffer" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">a #GstBuffer</doc>
+          <type name="Buffer" c:type="GstBuffer*"/>
+        </parameter>
+        <parameter name="data" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">data obtained from #GstMetaSerializeFunction</doc>
+          <type name="guint8" c:type="const guint8*"/>
+        </parameter>
+        <parameter name="size" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">size of data to avoid buffer overflow</doc>
+          <type name="gsize" c:type="gsize"/>
+        </parameter>
+        <parameter name="version" transfer-ownership="none">
+          <type name="guint8" c:type="guint8"/>
+        </parameter>
+      </parameters>
+    </callback>
     <bitfield name="MetaFlags" glib:type-name="GstMetaFlags" glib:get-type="gst_meta_flags_get_type" c:type="GstMetaFlags">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Extra metadata flags.</doc>
       <member name="none" value="0" c:identifier="GST_META_FLAG_NONE" glib:nick="none">
@@ -25987,6 +26152,22 @@ structure.</doc>
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">function for transforming the metadata</doc>
         <type name="MetaTransformFunction" c:type="GstMetaTransformFunction"/>
       </field>
+      <field name="serialize_func" version="1.24" writable="1">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Function for serializing the metadata, or %NULL if not supported by this
+meta.</doc>
+        <type name="MetaSerializeFunction" c:type="GstMetaSerializeFunction"/>
+      </field>
+      <field name="deserialize_func" version="1.24" writable="1">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Function for deserializing the metadata, or %NULL if not supported by this
+meta.</doc>
+        <type name="MetaDeserializeFunction" c:type="GstMetaDeserializeFunction"/>
+      </field>
+      <field name="clear_func" version="1.24" writable="1">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Function for clearing the metadata, or %NULL if not supported by this
+meta. This is called by the buffer pool when a buffer is returned for
+pooled metas.</doc>
+        <type name="MetaClearFunction" c:type="GstMetaClearFunction"/>
+      </field>
       <method name="is_custom" c:identifier="gst_meta_info_is_custom" version="1.20">
         <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
         <return-value transfer-ownership="none">
@@ -26000,6 +26181,75 @@ structure.</doc>
           </instance-parameter>
         </parameters>
       </method>
+      <method name="register" c:identifier="gst_meta_info_register" version="1.24">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Registers a new meta.
+
+Use the structure returned by gst_meta_info_new(), it consumes it and the
+structure shouldnt be used after. The one returned by the function can be
+kept.</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+        <return-value transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the registered meta</doc>
+          <type name="MetaInfo" c:type="const GstMetaInfo*"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="info" transfer-ownership="full">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a new #GstMetaInfo created by gst_meta_info_new()</doc>
+            <type name="MetaInfo" c:type="GstMetaInfo*"/>
+          </instance-parameter>
+        </parameters>
+      </method>
+      <function name="new" c:identifier="gst_meta_info_new" version="1.24" introspectable="0">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Creates a new structure that needs to be filled before being
+registered.  This structure should filled and then registered with
+gst_meta_info_register().
+
+Example:
+```c
+const GstMetaInfo *
+gst_my_meta_get_info (void)
+{
+  static const GstMetaInfo *meta_info = NULL;
+
+  if (g_once_init_enter ((GstMetaInfo **) &amp; meta_info)) {
+    GstMetaInfo *info = gst_meta_info_new (
+      gst_my_meta_api_get_type (),
+        "GstMyMeta",
+       sizeof (GstMyMeta));
+    const GstMetaInfo *meta = NULL;
+
+    info-&gt;init_func = my_meta_init;
+    info-&gt;free_func = my_meta_free;
+    info-&gt;transform_func = my_meta_transform;
+    info-&gt;serialize_func = my_meta_serialize;
+    info-&gt;deserialize_func = my_meta_deserialize;
+    meta = gst_meta_info_register (info);
+    g_once_init_leave ((GstMetaInfo **) &amp; meta_info, (GstMetaInfo *) meta);
+  }
+
+  return meta_info;
+}
+```</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+        <return-value>
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a new #GstMetaInfo that needs to be filled</doc>
+          <type name="MetaInfo" c:type="GstMetaInfo*"/>
+        </return-value>
+        <parameters>
+          <parameter name="api" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the type of the #GstMeta API</doc>
+            <type name="GType" c:type="GType"/>
+          </parameter>
+          <parameter name="impl" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the name of the #GstMeta implementation</doc>
+            <type name="utf8" c:type="const gchar*"/>
+          </parameter>
+          <parameter name="size" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the size of the #GstMeta structure</doc>
+            <type name="gsize" c:type="gsize"/>
+          </parameter>
+        </parameters>
+      </function>
     </record>
     <callback name="MetaInitFunction" c:type="GstMetaInitFunction">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Function called when @meta is initialized in @buffer.</doc>
@@ -26019,6 +26269,33 @@ structure.</doc>
         <parameter name="buffer" transfer-ownership="none">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">a #GstBuffer</doc>
           <type name="Buffer" c:type="GstBuffer*"/>
+        </parameter>
+      </parameters>
+    </callback>
+    <callback name="MetaSerializeFunction" c:type="GstMetaSerializeFunction" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">Serialize @meta into a format that can be stored or transmitted and later
+deserialized by #GstMetaDeserializeFunction.
+
+By default version is set to 0, it should be bumped if incompatible changes
+are made to the format so %GstMetaDeserializeFunction can deserialize each
+version.</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+      <return-value transfer-ownership="none">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">%TRUE on success, %FALSE otherwise.</doc>
+        <type name="gboolean" c:type="gboolean"/>
+      </return-value>
+      <parameters>
+        <parameter name="meta" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">a #GstMeta</doc>
+          <type name="Meta" c:type="const GstMeta*"/>
+        </parameter>
+        <parameter name="data" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">#GstByteArrayInterface to append serialization data</doc>
+          <type name="ByteArrayInterface" c:type="GstByteArrayInterface*"/>
+        </parameter>
+        <parameter name="version" direction="out" caller-allocates="0" transfer-ownership="full">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.h">version of the serialization format</doc>
+          <type name="guint8" c:type="guint8*"/>
         </parameter>
       </parameters>
     </callback>
@@ -26623,6 +26900,35 @@ last ref and @obj is about to be freed.</doc>
       <source-position filename="../subprojects/gstreamer/gst/gstobject.h"/>
       <parameters>
         <parameter name="obj">
+        </parameter>
+      </parameters>
+    </function-macro>
+    <function-macro name="OBJECT_AUTO_LOCK" c:identifier="GST_OBJECT_AUTO_LOCK" version="1.24.0" introspectable="0">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstobject.h">Declare a #GMutexLocker variable with g_autoptr() and lock the object. The
+mutex will be unlocked automatically when leaving the scope.
+
+``` c
+{
+  GST_OBJECT_AUTO_LOCK (obj, locker);
+
+  obj-&gt;stuff_with_lock();
+  if (cond) {
+    // No need to unlock
+    return;
+  }
+
+  // Unlock before end of scope
+  g_clear_pointer (&amp;locker, g_mutex_locker_free);
+  obj-&gt;stuff_without_lock();
+}
+```</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstobject.h"/>
+      <parameters>
+        <parameter name="obj">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstobject.h">a #GstObject to lock</doc>
+        </parameter>
+        <parameter name="var">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstobject.h">a variable name to be declared</doc>
         </parameter>
       </parameters>
     </function-macro>
@@ -27624,6 +27930,14 @@ the elements contained in that bin.</doc>
 after gst_deinit() has been called and so should be ignored by leak
 detection tools. (Since: 1.10)</doc>
       </member>
+      <member name="constructed" value="2" c:identifier="GST_OBJECT_FLAG_CONSTRUCTED" version="1.24" glib:nick="constructed">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstobject.h">Flag that's set when the object has been constructed. This can be used by
+API such as base class setters to differentiate between the case where
+they're called from a subclass's instance init function (and where the
+object isn't fully constructed yet, and so one shouldn't do anything but
+set values in the instance structure), and the case where the object is
+constructed.</doc>
+      </member>
       <member name="last" value="16" c:identifier="GST_OBJECT_FLAG_LAST" glib:nick="last">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstobject.h">subclasses can add additional flags starting from this flag</doc>
       </member>
@@ -28202,6 +28516,35 @@ queries explicitly if your element supports multiple scheduling modes.</doc>
       <parameters>
         <parameter name="pad">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpad.h">a #GstPad</doc>
+        </parameter>
+      </parameters>
+    </function-macro>
+    <function-macro name="PAD_STREAM_AUTO_LOCK" c:identifier="GST_PAD_STREAM_AUTO_LOCK" version="1.24.0" introspectable="0">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpad.h">Declare a #GRecMutexLocker variable with g_autoptr() and lock the pad. The
+recursive mutex will be unlocked automatically when leaving the scope.
+
+``` c
+{
+  GST_PAD_STREAM_AUTO_LOCK (pad, locker);
+
+  gst_pad_push_event(pad, event1);
+  if (cond) {
+    // No need to unlock
+    return;
+  }
+
+  // Unlock before end of scope
+  g_clear_pointer (&amp;locker, g_rec_mutex_locker_free);
+  gst_pad_push_event(pad, event2);
+}
+```</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstpad.h"/>
+      <parameters>
+        <parameter name="pad">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpad.h">a #GstPad</doc>
+        </parameter>
+        <parameter name="var">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpad.h">a variable name to be declared</doc>
         </parameter>
       </parameters>
     </function-macro>
@@ -32519,6 +32862,23 @@ clock, even if the pipeline is not in the PLAYING state.</doc>
           </instance-parameter>
         </parameters>
       </method>
+      <method name="get_configured_latency" c:identifier="gst_pipeline_get_configured_latency" version="1.24">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">Return the configured latency on @pipeline.</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gstpipeline.h"/>
+        <return-value transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">@pipeline configured latency, or %GST_CLOCK_TIME_NONE if none has been configured
+because @pipeline did not reach the PLAYING state yet.
+
+MT safe.</doc>
+          <type name="ClockTime" c:type="GstClockTime"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="pipeline" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">a #GstPipeline</doc>
+            <type name="Pipeline" c:type="GstPipeline*"/>
+          </instance-parameter>
+        </parameters>
+      </method>
       <method name="get_delay" c:identifier="gst_pipeline_get_delay">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">Get the configured delay (see gst_pipeline_set_delay()).</doc>
         <source-position filename="../subprojects/gstreamer/gst/gstpipeline.h"/>
@@ -32559,6 +32919,22 @@ clock, even if the pipeline is not in the PLAYING state.</doc>
         <return-value transfer-ownership="full">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">a #GstClock, unref after usage.</doc>
           <type name="Clock" c:type="GstClock*"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="pipeline" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">a #GstPipeline</doc>
+            <type name="Pipeline" c:type="GstPipeline*"/>
+          </instance-parameter>
+        </parameters>
+      </method>
+      <method name="is_live" c:identifier="gst_pipeline_is_live" version="1.24">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">Check if @pipeline is live.</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gstpipeline.h"/>
+        <return-value transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstpipeline.c">%TRUE if @pipeline is live, %FALSE if not or if it did not reach the PAUSED state yet.
+
+MT safe.</doc>
+          <type name="gboolean" c:type="gboolean"/>
         </return-value>
         <parameters>
           <instance-parameter name="pipeline" transfer-ownership="none">
@@ -33052,6 +33428,54 @@ arguments separated by predefined delimiters (see above).</doc>
           </parameter>
         </parameters>
       </method>
+      <method name="add_status_error" c:identifier="gst_plugin_add_status_error" version="1.24">
+        <source-position filename="../subprojects/gstreamer/gst/gstplugin.h"/>
+        <return-value transfer-ownership="none">
+          <type name="none" c:type="void"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="plugin" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">a #GstPlugin</doc>
+            <type name="Plugin" c:type="GstPlugin*"/>
+          </instance-parameter>
+          <parameter name="message" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">the status error message</doc>
+            <type name="utf8" c:type="const gchar*"/>
+          </parameter>
+        </parameters>
+      </method>
+      <method name="add_status_info" c:identifier="gst_plugin_add_status_info" version="1.24">
+        <source-position filename="../subprojects/gstreamer/gst/gstplugin.h"/>
+        <return-value transfer-ownership="none">
+          <type name="none" c:type="void"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="plugin" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">a #GstPlugin</doc>
+            <type name="Plugin" c:type="GstPlugin*"/>
+          </instance-parameter>
+          <parameter name="message" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">the status info message</doc>
+            <type name="utf8" c:type="const gchar*"/>
+          </parameter>
+        </parameters>
+      </method>
+      <method name="add_status_warning" c:identifier="gst_plugin_add_status_warning" version="1.24">
+        <source-position filename="../subprojects/gstreamer/gst/gstplugin.h"/>
+        <return-value transfer-ownership="none">
+          <type name="none" c:type="void"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="plugin" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">a #GstPlugin</doc>
+            <type name="Plugin" c:type="GstPlugin*"/>
+          </instance-parameter>
+          <parameter name="message" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">the status warning message</doc>
+            <type name="utf8" c:type="const gchar*"/>
+          </parameter>
+        </parameters>
+      </method>
       <method name="get_cache_data" c:identifier="gst_plugin_get_cache_data">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">Gets the plugin specific data cache. If it is %NULL there is no cached data
 stored. This is the case when the registry is getting rebuilt.</doc>
@@ -33184,6 +33608,51 @@ available.</doc>
         <parameters>
           <instance-parameter name="plugin" transfer-ownership="none">
             <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">plugin to get the source of</doc>
+            <type name="Plugin" c:type="GstPlugin*"/>
+          </instance-parameter>
+        </parameters>
+      </method>
+      <method name="get_status_errors" c:identifier="gst_plugin_get_status_errors" version="1.24">
+        <source-position filename="../subprojects/gstreamer/gst/gstplugin.h"/>
+        <return-value transfer-ownership="full" nullable="1">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">an array of plugin status error messages, or NULL</doc>
+          <array c:type="gchar**">
+            <type name="utf8"/>
+          </array>
+        </return-value>
+        <parameters>
+          <instance-parameter name="plugin" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">a #GstPlugin</doc>
+            <type name="Plugin" c:type="GstPlugin*"/>
+          </instance-parameter>
+        </parameters>
+      </method>
+      <method name="get_status_infos" c:identifier="gst_plugin_get_status_infos" version="1.24">
+        <source-position filename="../subprojects/gstreamer/gst/gstplugin.h"/>
+        <return-value transfer-ownership="full" nullable="1">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">an array of plugin status info messages, or NULL</doc>
+          <array c:type="gchar**">
+            <type name="utf8"/>
+          </array>
+        </return-value>
+        <parameters>
+          <instance-parameter name="plugin" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">a #GstPlugin</doc>
+            <type name="Plugin" c:type="GstPlugin*"/>
+          </instance-parameter>
+        </parameters>
+      </method>
+      <method name="get_status_warnings" c:identifier="gst_plugin_get_status_warnings" version="1.24">
+        <source-position filename="../subprojects/gstreamer/gst/gstplugin.h"/>
+        <return-value transfer-ownership="full" nullable="1">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">an array of plugin status warning messages, or NULL</doc>
+          <array c:type="gchar**">
+            <type name="utf8"/>
+          </array>
+        </return-value>
+        <parameters>
+          <instance-parameter name="plugin" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstplugin.c">a #GstPlugin</doc>
             <type name="Plugin" c:type="GstPlugin*"/>
           </instance-parameter>
         </parameters>
@@ -37637,7 +38106,10 @@ references would be
  * `timestamp/x-ptp, version=IEEE1588-2008, domain=1`: for timestamps based
    on a given PTP clock.
  * `timestamp/x-unix`: for timestamps based on the UNIX epoch according to
-   the local clock.</doc>
+   the local clock.
+
+Since 1.24 it can be serialized using gst_meta_serialize() and
+gst_meta_deserialize().</doc>
       <source-position filename="../subprojects/gstreamer/gst/gstbuffer.h"/>
       <field name="parent" writable="1">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstbuffer.h">the parent #GstMeta structure</doc>
@@ -39806,6 +40278,10 @@ values of the seek flags.</doc>
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.h">Serialize using the old format for
                                      nested structures.</doc>
       </member>
+      <member name="strict" value="2" c:identifier="GST_SERIALIZE_FLAG_STRICT" version="1.24" glib:nick="strict">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.h">Serialization fails if a value cannot be serialized instead of using
+placeholder "NULL" value (e.g. pointers, objects).</doc>
+      </member>
     </bitfield>
     <class name="SharedTaskPool" c:symbol-prefix="shared_task_pool" c:type="GstSharedTaskPool" version="1.20" parent="TaskPool" glib:type-name="GstSharedTaskPool" glib:get-type="gst_shared_task_pool_get_type" glib:type-struct="SharedTaskPoolClass">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gsttaskpool.h">The #GstSharedTaskPool object.</doc>
@@ -40805,7 +41281,7 @@ a-struct, nested=[nested-struct, nested=true]
 ```
 
 &gt; *note*: gst_structure_to_string() won't use that syntax for backward
-&gt; compatibility reason, gst_structure_serialize() has been added for
+&gt; compatibility reason, gst_structure_serialize_full() has been added for
 &gt; that purpose.</doc>
       <source-position filename="../subprojects/gstreamer/gst/gststructure.h"/>
       <field name="type" writable="1">
@@ -42255,7 +42731,7 @@ argument is ignored.</doc>
           </parameter>
         </parameters>
       </method>
-      <method name="serialize" c:identifier="gst_structure_serialize" version="1.20">
+      <method name="serialize" c:identifier="gst_structure_serialize" version="1.20" deprecated="1">
         <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.c">Converts @structure to a human-readable string representation.
 
 This version of the caps serialization function introduces support for nested
@@ -42263,9 +42739,34 @@ structures and caps but the resulting strings won't be parsable with
 GStreamer prior to 1.20 unless #GST_SERIALIZE_FLAG_BACKWARD_COMPAT is passed
 as @flag.
 
+%GST_SERIALIZE_FLAG_STRICT flags is not allowed because it would make this
+function nullable which is an API break for bindings.
+Use gst_structure_serialize_full() instead.
+
 Free-function: g_free</doc>
+        <doc-deprecated xml:space="preserve">Use gst_structure_serialize_full() instead.</doc-deprecated>
         <source-position filename="../subprojects/gstreamer/gst/gststructure.h"/>
         <return-value transfer-ownership="full">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.c">a pointer to string allocated by g_malloc().
+    g_free() after usage.</doc>
+          <type name="utf8" c:type="gchar*"/>
+        </return-value>
+        <parameters>
+          <instance-parameter name="structure" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.c">a #GstStructure</doc>
+            <type name="Structure" c:type="const GstStructure*"/>
+          </instance-parameter>
+          <parameter name="flags" transfer-ownership="none">
+            <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.c">The flags to use to serialize structure</doc>
+            <type name="SerializeFlags" c:type="GstSerializeFlags"/>
+          </parameter>
+        </parameters>
+      </method>
+      <method name="serialize_full" c:identifier="gst_structure_serialize_full" version="1.24">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.c">Alias for gst_structure_serialize() but with nullable annotation because it
+can return %NULL when %GST_SERIALIZE_FLAG_STRICT flag is set.</doc>
+        <source-position filename="../subprojects/gstreamer/gst/gststructure.h"/>
+        <return-value transfer-ownership="full" nullable="1">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststructure.c">a pointer to string allocated by g_malloc().
     g_free() after usage.</doc>
           <type name="utf8" c:type="gchar*"/>
@@ -42470,7 +42971,7 @@ This prints the structure in human readable form.
 
 This function will lead to unexpected results when there are nested #GstCaps
 / #GstStructure deeper than one level, you should user
-gst_structure_serialize() instead for those cases.
+gst_structure_serialize_full() instead for those cases.
 
 Free-function: g_free</doc>
         <source-position filename="../subprojects/gstreamer/gst/gststructure.h"/>
@@ -42794,6 +43295,14 @@ attachment)</doc>
     </constant>
     <constant name="TAG_CONTAINER_FORMAT" value="container-format" c:type="GST_TAG_CONTAINER_FORMAT">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gsttaglist.h">container format the data is stored in (string)</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gsttaglist.h"/>
+      <type name="utf8" c:type="gchar*"/>
+    </constant>
+    <constant name="TAG_CONTAINER_SPECIFIC_TRACK_ID" value="container-specific-track-id" c:type="GST_TAG_CONTAINER_SPECIFIC_TRACK_ID" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gsttaglist.h">Unique identifier for the audio, video or text track this tag is associated
+with. The mappings for several container formats are defined in the [Sourcing
+In-band Media Resource Tracks from Media Containers into HTML
+specification](https://dev.w3.org/html5/html-sourcing-inband-tracks/).</doc>
       <source-position filename="../subprojects/gstreamer/gst/gsttaglist.h"/>
       <type name="utf8" c:type="gchar*"/>
     </constant>
@@ -48882,7 +49391,7 @@ determine a order for the two provided values.</doc>
       <source-position filename="../subprojects/gstreamer/gst/gstversion.h"/>
       <type name="gint" c:type="gint"/>
     </constant>
-    <constant name="VERSION_MINOR" value="23" c:type="GST_VERSION_MINOR">
+    <constant name="VERSION_MINOR" value="25" c:type="GST_VERSION_MINOR">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstversion.h">The minor version of GStreamer at compile time:</doc>
       <source-position filename="../subprojects/gstreamer/gst/gstversion.h"/>
       <type name="gint" c:type="gint"/>
@@ -51476,7 +51985,16 @@ which is then encapsulated in a GstProtectionMeta object and attached to
 the corresponding output buffer using the gst_buffer_add_protection_meta()
 function. The information in this attached GstProtectionMeta would be
 used by a downstream decrypter element to recover the original unencrypted
-frame.</doc>
+frame.
+
+In addition to the #GstProtectionMeta demuxers signal encrypted streams with
+specific caps. The caps #GstStructure name will usually depend on the
+encryption scheme, for instance Common Encryption will be signaled with
+`application/x-cenc`. To prevent loss of information the media type of the
+decrypted stream will be stored in a `original-media-type` string field.
+Downstream elements can re-use that information, for instance decryptors can
+set their source pad caps according to the `original-media-type` received on
+their sink pad.</doc>
     </docsection>
     <docsection name="gststreams">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gststreams.c">A #GstStream is a high-level object defining a stream of data which is, or
@@ -51922,6 +52440,40 @@ of @new_message.</doc>
         </parameter>
       </parameters>
     </function>
+    <function name="meta_deserialize" c:identifier="gst_meta_deserialize" moved-to="Meta.deserialize" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Recreate a #GstMeta from serialized data returned by
+gst_meta_serialize() and add it to @buffer.
+
+Note that the meta must have been previously registered by calling one of
+`gst_*_meta_get_info ()` functions.
+
+@consumed is set to the number of bytes that can be skipped from @data to
+find the next meta serialization, if any. In case of parsing error that does
+not allow to determine that size, @consumed is set to 0.</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+      <return-value transfer-ownership="none" nullable="1">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the metadata owned by @buffer, or %NULL.</doc>
+        <type name="Meta" c:type="GstMeta*"/>
+      </return-value>
+      <parameters>
+        <parameter name="buffer" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstBuffer</doc>
+          <type name="Buffer" c:type="GstBuffer*"/>
+        </parameter>
+        <parameter name="data" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">serialization data obtained from gst_meta_serialize()</doc>
+          <type name="guint8" c:type="const guint8*"/>
+        </parameter>
+        <parameter name="size" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">size of @data</doc>
+          <type name="gsize" c:type="gsize"/>
+        </parameter>
+        <parameter name="consumed" direction="out" caller-allocates="0" transfer-ownership="full">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">total size used by this meta, could be less than @size</doc>
+          <type name="guint32" c:type="guint32*"/>
+        </parameter>
+      </parameters>
+    </function>
     <function name="meta_get_info" c:identifier="gst_meta_get_info" moved-to="Meta.get_info">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Lookup a previously registered meta info structure by its implementation name
 @impl.</doc>
@@ -51938,7 +52490,58 @@ of @new_message.</doc>
         </parameter>
       </parameters>
     </function>
-    <function name="meta_register" c:identifier="gst_meta_register" moved-to="Meta.register">
+    <function name="meta_info_new" c:identifier="gst_meta_info_new" moved-to="MetaInfo.new" version="1.24" introspectable="0">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Creates a new structure that needs to be filled before being
+registered.  This structure should filled and then registered with
+gst_meta_info_register().
+
+Example:
+```c
+const GstMetaInfo *
+gst_my_meta_get_info (void)
+{
+  static const GstMetaInfo *meta_info = NULL;
+
+  if (g_once_init_enter ((GstMetaInfo **) &amp; meta_info)) {
+    GstMetaInfo *info = gst_meta_info_new (
+      gst_my_meta_api_get_type (),
+        "GstMyMeta",
+       sizeof (GstMyMeta));
+    const GstMetaInfo *meta = NULL;
+
+    info-&gt;init_func = my_meta_init;
+    info-&gt;free_func = my_meta_free;
+    info-&gt;transform_func = my_meta_transform;
+    info-&gt;serialize_func = my_meta_serialize;
+    info-&gt;deserialize_func = my_meta_deserialize;
+    meta = gst_meta_info_register (info);
+    g_once_init_leave ((GstMetaInfo **) &amp; meta_info, (GstMetaInfo *) meta);
+  }
+
+  return meta_info;
+}
+```</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstmeta.h"/>
+      <return-value>
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a new #GstMetaInfo that needs to be filled</doc>
+        <type name="MetaInfo" c:type="GstMetaInfo*"/>
+      </return-value>
+      <parameters>
+        <parameter name="api" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the type of the #GstMeta API</doc>
+          <type name="GType" c:type="GType"/>
+        </parameter>
+        <parameter name="impl" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the name of the #GstMeta implementation</doc>
+          <type name="utf8" c:type="const gchar*"/>
+        </parameter>
+        <parameter name="size" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the size of the #GstMeta structure</doc>
+          <type name="gsize" c:type="gsize"/>
+        </parameter>
+      </parameters>
+    </function>
+    <function name="meta_register" c:identifier="gst_meta_register" moved-to="Meta.register" introspectable="0">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">Register a new #GstMeta implementation.
 
 The same @info can be retrieved later with gst_meta_get_info() by using
@@ -51962,15 +52565,15 @@ access metadata.</doc>
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">the size of the #GstMeta structure</doc>
           <type name="gsize" c:type="gsize"/>
         </parameter>
-        <parameter name="init_func" transfer-ownership="none" scope="async">
+        <parameter name="init_func" transfer-ownership="none">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMetaInitFunction</doc>
           <type name="MetaInitFunction" c:type="GstMetaInitFunction"/>
         </parameter>
-        <parameter name="free_func" transfer-ownership="none" scope="async">
+        <parameter name="free_func" transfer-ownership="none">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMetaFreeFunction</doc>
           <type name="MetaFreeFunction" c:type="GstMetaFreeFunction"/>
         </parameter>
-        <parameter name="transform_func" transfer-ownership="none" scope="async">
+        <parameter name="transform_func" transfer-ownership="none">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstmeta.c">a #GstMetaTransformFunction</doc>
           <type name="MetaTransformFunction" c:type="GstMetaTransformFunction"/>
         </parameter>
@@ -53904,6 +54507,20 @@ element or %NULL if nothing was found</doc>
         </parameter>
       </parameters>
     </function>
+    <function name="util_ceil_log2" c:identifier="gst_util_ceil_log2" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">Return a max num of log2.</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstutils.h"/>
+      <return-value transfer-ownership="none">
+        <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">a computed #guint val.</doc>
+        <type name="guint" c:type="guint"/>
+      </return-value>
+      <parameters>
+        <parameter name="v" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">a #guint32 value.</doc>
+          <type name="guint32" c:type="guint32"/>
+        </parameter>
+      </parameters>
+    </function>
     <function name="util_double_to_fraction" c:identifier="gst_util_double_to_fraction">
       <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">Transforms a #gdouble to a fraction and simplifies
 the result.</doc>
@@ -53955,6 +54572,23 @@ the result.</doc>
         <parameter name="size" transfer-ownership="none">
           <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">the size of the memory block to dump</doc>
           <type name="guint" c:type="guint"/>
+        </parameter>
+      </parameters>
+    </function>
+    <function name="util_filename_compare" c:identifier="gst_util_filename_compare" version="1.24">
+      <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">Compares the given filenames using natural ordering.</doc>
+      <source-position filename="../subprojects/gstreamer/gst/gstutils.h"/>
+      <return-value transfer-ownership="none">
+        <type name="gint" c:type="gint"/>
+      </return-value>
+      <parameters>
+        <parameter name="a" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">a filename to compare with @b</doc>
+          <type name="filename" c:type="const gchar*"/>
+        </parameter>
+        <parameter name="b" transfer-ownership="none">
+          <doc xml:space="preserve" filename="../subprojects/gstreamer/gst/gstutils.c">a filename to compare with @a</doc>
+          <type name="filename" c:type="const gchar*"/>
         </parameter>
       </parameters>
     </function>

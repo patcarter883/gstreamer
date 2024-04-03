@@ -985,6 +985,10 @@ gst_v4l2_object_close (GstV4l2Object * v4l2object)
     v4l2object->channel = NULL;
   }
 
+  /* remove old fd from poll */
+  if (v4l2object->poll)
+    gst_poll_remove_fd (v4l2object->poll, &v4l2object->pollfd);
+
   return TRUE;
 }
 
@@ -3174,6 +3178,8 @@ default_frame_sizes:
       min_w = min_h = 1;
     if (max_w == 0 || max_h == 0)
       max_w = max_h = GST_V4L2_MAX_SIZE;
+    v4l2object->max_width = max_w;
+    v4l2object->max_height = max_h;
 
     /* Since we can't get framerate directly, try to use the current norm */
     if (v4l2object->tv_norm && v4l2object->norms) {

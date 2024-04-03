@@ -72,7 +72,7 @@
  * No special opengl extension is used in this pipeline, that's why it should work
  * with OpenGL >= 1.1. That's the case if you are using the MESA3D driver v1.3.
  * |[
- * gst-plugins-bas/tests/examples/gl/generic/cube
+ * gst-plugins-base/tests/examples/gl/generic/cube
  * ]| The graphic FPS scene can be greater than the input video FPS.
  * The graphic scene can be written from a client code through the
  * two glfilterapp properties.
@@ -1004,12 +1004,17 @@ gst_glimage_sink_mouse_scroll_event_cb (GstGLWindow * window,
 static void
 _set_context (GstGLImageSink * gl_sink, GstGLContext * context)
 {
-  GST_GLIMAGE_SINK_LOCK (gl_sink);
-  if (gl_sink->context)
-    gst_object_unref (gl_sink->context);
+  GstGLContext *old_context;
 
+  GST_GLIMAGE_SINK_LOCK (gl_sink);
+
+  old_context = gl_sink->context;
   gl_sink->context = context;
+
   GST_GLIMAGE_SINK_UNLOCK (gl_sink);
+
+  if (old_context)
+    gst_object_unref (old_context);
 }
 
 static void
@@ -2480,25 +2485,30 @@ gst_glimage_sink_on_draw (GstGLImageSink * gl_sink)
 static void
 gst_glimage_sink_on_close (GstGLImageSink * gl_sink)
 {
-  GstGLWindow *window;
+  GstGLWindow *window = NULL;
 
   GST_WARNING_OBJECT (gl_sink, "Output window was closed");
 
-  window = gst_gl_context_get_window (gl_sink->context);
+  GST_GLIMAGE_SINK_LOCK (gl_sink);
+  if (gl_sink->context)
+    window = gst_gl_context_get_window (gl_sink->context);
+  GST_GLIMAGE_SINK_UNLOCK (gl_sink);
 
-  if (gl_sink->key_sig_id)
-    g_signal_handler_disconnect (window, gl_sink->key_sig_id);
-  gl_sink->key_sig_id = 0;
-  if (gl_sink->mouse_sig_id)
-    g_signal_handler_disconnect (window, gl_sink->mouse_sig_id);
-  gl_sink->mouse_sig_id = 0;
-  if (gl_sink->mouse_scroll_sig_id)
-    g_signal_handler_disconnect (window, gl_sink->mouse_scroll_sig_id);
-  gl_sink->mouse_scroll_sig_id = 0;
+  if (window) {
+    if (gl_sink->key_sig_id)
+      g_signal_handler_disconnect (window, gl_sink->key_sig_id);
+    gl_sink->key_sig_id = 0;
+    if (gl_sink->mouse_sig_id)
+      g_signal_handler_disconnect (window, gl_sink->mouse_sig_id);
+    gl_sink->mouse_sig_id = 0;
+    if (gl_sink->mouse_scroll_sig_id)
+      g_signal_handler_disconnect (window, gl_sink->mouse_scroll_sig_id);
+    gl_sink->mouse_scroll_sig_id = 0;
+
+    gst_object_unref (window);
+  }
 
   g_atomic_int_set (&gl_sink->to_quit, 1);
-
-  gst_object_unref (window);
 }
 
 static gboolean

@@ -27,49 +27,26 @@
  * This element can apply an ONNX model to video buffers. It attaches
  * the tensor output to the buffer as a @ref GstTensorMeta.
  *
- * To install ONNX on your system, recursively clone this repository
- * https://github.com/microsoft/onnxruntime.git
- *
- * and build and install with cmake:
- *
- * CPU:
- *
- *  cmake -Donnxruntime_BUILD_SHARED_LIB:ON -DBUILD_TESTING:OFF \
- *  $SRC_DIR/onnxruntime/cmake && make -j$(nproc) && sudo make install
- *
- *
- * CUDA :
- *
- * cmake -Donnxruntime_BUILD_SHARED_LIB:ON -DBUILD_TESTING:OFF -Donnxruntime_USE_CUDA:ON \
- * -Donnxruntime_CUDA_HOME=$CUDA_PATH -Donnxruntime_CUDNN_HOME=$CUDA_PATH \
- *  $SRC_DIR/onnxruntime/cmake && make -j$(nproc) && sudo make install
- *
- *
- * where :
- *
- * 1. $SRC_DIR and $BUILD_DIR are local source and build directories
- * 2. To run with CUDA, both CUDA and cuDNN libraries must be installed.
- *    $CUDA_PATH is an environment variable set to the CUDA root path.
- *    On Linux, it would be /usr/local/cuda
- *
+ * To install ONNX on your system, follow the instructions in the
+ * README.md in with this plugin.
  *
  * ## Example launch command:
  *
- * GST_DEBUG=onnxinference:5 gst-launch-1.0 multifilesrc location=bus.jpg ! \
- * jpegdec ! videoconvert ! \
- * onnxinference execution-provider=cpu model-file=model.onnx \
- * videoconvert ! autovideosink
+ * Test image file, model file (SSD) and label file can be found here :
+ * https://gitlab.collabora.com/gstreamer/onnx-models
+ *
+ * GST_DEBUG=ssdobjectdetector:5 \
+ * gst-launch-1.0 filesrc location=onnx-models/images/bus.jpg ! \
+ * jpegdec ! videoconvert ! onnxinference execution-provider=cpu model-file=onnx-models/models/ssd_mobilenet_v1_coco.onnx !  \
+ * ssdobjectdetector label-file=onnx-models/labels/COCO_classes.txt  ! videoconvert ! imagefreeze ! autovideosink
  *
  *
  * Note: in order for downstream tensor decoders to correctly parse the tensor
  * data in the GstTensorMeta, meta data must be attached to the ONNX model
  * assigning a unique string id to each output layer. These unique string ids
- * and corresponding GQuark ids are currently stored in the ONNX plugin source
- * in the file 'gsttensorid.h'. For an output layer with name Foo and with context
- * unique string id Gst.Model.Bar, a meta data key/value pair must be added
- * to the ONNX model with "Foo" mapped to "Gst.Model.Bar" in order for a downstream
- * decoder to make use of this model. If the meta data is absent, the pipeline will
- * fail.
+ * and corresponding GQuark ids are currently stored in the tensor decoder's
+ * header file, in this case gstssdobjectdetector.h. If the meta data is absent,
+ * the pipeline will fail.
  *
  * As a convenience, there is a python script
  * currently stored at
@@ -109,7 +86,8 @@ struct _GstOnnxInference
   GstVideoInfo video_info;
 };
 
-GST_DEBUG_CATEGORY_STATIC (onnx_inference_debug);
+GST_DEBUG_CATEGORY (onnx_inference_debug);
+
 #define GST_CAT_DEFAULT onnx_inference_debug
 #define GST_ONNX_CLIENT_MEMBER( self ) ((GstOnnxNamespace::GstOnnxClient *) (self->onnx_client))
 GST_ELEMENT_REGISTER_DEFINE (onnx_inference, "onnxinference",
@@ -123,7 +101,6 @@ enum
   PROP_INPUT_IMAGE_FORMAT,
   PROP_OPTIMIZATION_LEVEL,
   PROP_EXECUTION_PROVIDER,
-  PROP_INPUT_IMAGE_DATATYPE,
   PROP_INPUT_OFFSET,
   PROP_INPUT_SCALE
 };
@@ -171,9 +148,6 @@ GType gst_onnx_execution_provider_get_type (void);
 
 GType gst_ml_model_input_image_format_get_type (void);
 #define GST_TYPE_ML_MODEL_INPUT_IMAGE_FORMAT (gst_ml_model_input_image_format_get_type ())
-
-GType gst_onnx_model_input_image_datatype_get_type (void);
-#define GST_TYPE_ONNX_MODEL_INPUT_IMAGE_DATATYPE (gst_onnx_model_input_image_datatype_get_type ())
 
 GType
 gst_onnx_optimization_level_get_type (void)
@@ -253,28 +227,6 @@ gst_ml_model_input_image_format_get_type (void)
   return ml_model_input_image_format;
 }
 
-GType
-gst_onnx_model_input_image_datatype_get_type (void)
-{
-  static GType model_input_image_datatype = 0;
-
-  if (g_once_init_enter (&model_input_image_datatype)) {
-    static GEnumValue model_input_image_datatype_types[] = {
-      {GST_TENSOR_TYPE_INT8, "8 Bits integer", "int8"},
-      {GST_TENSOR_TYPE_FLOAT32, "32 Bits floating points", "float"},
-      {0, NULL, NULL},
-    };
-
-    GType temp = g_enum_register_static ("GstTensorType",
-        model_input_image_datatype_types);
-
-    g_once_init_leave (&model_input_image_datatype, temp);
-  }
-
-  return model_input_image_datatype;
-
-}
-
 static void
 gst_onnx_inference_class_init (GstOnnxInferenceClass * klass)
 {
@@ -348,22 +300,6 @@ gst_onnx_inference_class_init (GstOnnxInferenceClass * klass)
           GST_ONNX_EXECUTION_PROVIDER_CPU, (GParamFlags)
           (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 
-  /**
-   * GstOnnxInference:input-image-datatype
-   *
-   * Temporary hack, this should be discovered from the model and exposed
-   * on sinkpad caps based on model contrains.
-   */
-
-  g_object_class_install_property (G_OBJECT_CLASS (klass),
-      PROP_INPUT_IMAGE_DATATYPE,
-      g_param_spec_enum ("input-image-datatype",
-          "Inference input image datatype",
-          "Datatype that will be used as an input for the inference",
-          GST_TYPE_ONNX_MODEL_INPUT_IMAGE_DATATYPE,
-          GST_TENSOR_TYPE_INT8,
-          (GParamFlags)(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
-
   g_object_class_install_property (G_OBJECT_CLASS (klass),
       PROP_INPUT_OFFSET,
       g_param_spec_float ("input-tensor-offset",
@@ -400,7 +336,7 @@ gst_onnx_inference_class_init (GstOnnxInferenceClass * klass)
 static void
 gst_onnx_inference_init (GstOnnxInference * self)
 {
-  self->onnx_client = new GstOnnxNamespace::GstOnnxClient ();
+  self->onnx_client = new GstOnnxNamespace::GstOnnxClient (GST_ELEMENT(self));
   self->onnx_disabled = TRUE;
 }
 
@@ -448,10 +384,6 @@ gst_onnx_inference_set_property (GObject * object, guint prop_id,
       onnxClient->setInputImageFormat ((GstMlInputImageFormat)
           g_value_get_enum (value));
       break;
-    case PROP_INPUT_IMAGE_DATATYPE:
-      onnxClient->setInputImageDatatype ((GstTensorType)
-          g_value_get_enum (value));
-      break;
     case PROP_INPUT_OFFSET:
       onnxClient->setInputImageOffset (g_value_get_float (value));
       break;
@@ -483,9 +415,6 @@ gst_onnx_inference_get_property (GObject * object, guint prop_id,
       break;
     case PROP_INPUT_IMAGE_FORMAT:
       g_value_set_enum (value, onnxClient->getInputImageFormat ());
-      break;
-    case PROP_INPUT_IMAGE_DATATYPE:
-      g_value_set_enum (value, onnxClient->getInputImageDatatype ());
       break;
     case PROP_INPUT_OFFSET:
       g_value_set_float (value, onnxClient->getInputImageOffset ());
@@ -545,34 +474,70 @@ gst_onnx_inference_transform_caps (GstBaseTransform *
   GstOnnxInference *self = GST_ONNX_INFERENCE (trans);
   auto onnxClient = GST_ONNX_CLIENT_MEMBER (self);
   GstCaps *other_caps;
-  guint i;
+  GstCaps *restrictions;
 
   if (!gst_onnx_inference_create_session (trans))
     return NULL;
   GST_LOG_OBJECT (self, "transforming caps %" GST_PTR_FORMAT, caps);
 
-  if (gst_base_transform_is_passthrough (trans)
-      || (!onnxClient->isFixedInputImageSize ()))
+  if (gst_base_transform_is_passthrough (trans))
     return gst_caps_ref (caps);
 
-  other_caps = gst_caps_new_empty ();
-  for (i = 0; i < gst_caps_get_size (caps); ++i) {
-    GstStructure *structure, *new_structure;
+  restrictions = gst_caps_new_empty_simple ("video/x-raw");
+  if (onnxClient->isFixedInputImageSize ())
+    gst_caps_set_simple (restrictions, "width", G_TYPE_INT,
+      onnxClient->getWidth (), "height", G_TYPE_INT,
+      onnxClient->getHeight (), NULL);
 
-    structure = gst_caps_get_structure (caps, i);
-    new_structure = gst_structure_copy (structure);
-    gst_structure_set (new_structure, "width", G_TYPE_INT,
-        onnxClient->getWidth (), "height", G_TYPE_INT,
-        onnxClient->getHeight (), NULL);
-    GST_LOG_OBJECT (self,
-        "transformed structure %2d: %" GST_PTR_FORMAT " => %"
-        GST_PTR_FORMAT, i, structure, new_structure);
-    gst_caps_append_structure (other_caps, new_structure);
+  if (onnxClient->getInputImageDatatype() == GST_TENSOR_TYPE_UINT8 &&
+      onnxClient->getInputImageScale() == 1.0 &&
+      onnxClient->getInputImageOffset() == 0.0) {
+    switch (onnxClient->getChannels()) {
+      case 1:
+        gst_caps_set_simple (restrictions, "format", G_TYPE_STRING, "GRAY8",
+          NULL);
+        break;
+      case 3:
+        switch (onnxClient->getInputImageFormat ()) {
+        case GST_ML_INPUT_IMAGE_FORMAT_HWC:
+          gst_caps_set_simple (restrictions, "format", G_TYPE_STRING, "RGB",
+                               NULL);
+          break;
+        case GST_ML_INPUT_IMAGE_FORMAT_CHW:
+          gst_caps_set_simple (restrictions, "format", G_TYPE_STRING, "RGBP",
+                               NULL);
+          break;
+        }
+        break;
+      case 4:
+        switch (onnxClient->getInputImageFormat ()) {
+        case GST_ML_INPUT_IMAGE_FORMAT_HWC:
+          gst_caps_set_simple (restrictions, "format", G_TYPE_STRING, "RGBA",
+                               NULL);
+          break;
+        case GST_ML_INPUT_IMAGE_FORMAT_CHW:
+          gst_caps_set_simple (restrictions, "format", G_TYPE_STRING, "RGBAP",
+                               NULL);
+          break;
+        }
+        break;
+      default:
+        GST_ERROR_OBJECT (self, "Invalid number of channels %d",
+          onnxClient->getChannels());
+        return NULL;
+    }
   }
 
-  if (!gst_caps_is_empty (other_caps) && filter_caps) {
-    GstCaps *tmp = gst_caps_intersect_full (other_caps, filter_caps,
-        GST_CAPS_INTERSECT_FIRST);
+  GST_DEBUG_OBJECT(self, "Applying caps restrictions: %" GST_PTR_FORMAT,
+    restrictions);
+
+  other_caps = gst_caps_intersect_full (caps, restrictions,
+                                        GST_CAPS_INTERSECT_FIRST);
+  gst_caps_unref (restrictions);
+
+  if (filter_caps) {
+    GstCaps *tmp = gst_caps_intersect_full (
+        other_caps, filter_caps, GST_CAPS_INTERSECT_FIRST);
     gst_caps_replace (&other_caps, tmp);
     gst_caps_unref (tmp);
   }

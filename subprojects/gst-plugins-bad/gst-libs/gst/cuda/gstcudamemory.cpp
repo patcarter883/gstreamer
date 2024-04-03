@@ -264,6 +264,7 @@ gst_cuda_allocator_update_info (const GstVideoInfo * reference,
     case GST_VIDEO_FORMAT_RGB10A2_LE:
     case GST_VIDEO_FORMAT_YUY2:
     case GST_VIDEO_FORMAT_UYVY:
+    case GST_VIDEO_FORMAT_VUYA:
       ret.stride[0] = pitch;
       ret.offset[0] = 0;
       break;
@@ -1675,11 +1676,6 @@ gst_cuda_memory_release (GstMiniObject * object)
   }
 
   alloc = GST_CUDA_POOL_ALLOCATOR (mem->allocator);
-  /* if flushing, free this memory */
-  if (GST_CUDA_POOL_ALLOCATOR_IS_FLUSHING (alloc)) {
-    GST_LOG_OBJECT (alloc, "allocator is flushing, free %p", mem);
-    return TRUE;
-  }
 
   /* return the memory to the allocator */
   gst_memory_ref (mem);
@@ -1908,7 +1904,6 @@ gst_cuda_pool_allocator_acquire_memory (GstCudaPoolAllocator * allocator,
     gst_object_unref (mem->allocator);
     mem->allocator = (GstAllocator *) gst_object_ref (allocator);
     GST_MINI_OBJECT_CAST (mem)->dispose = gst_cuda_memory_release;
-    allocator->priv->outstanding++;
   } else {
     dec_outstanding (allocator);
   }

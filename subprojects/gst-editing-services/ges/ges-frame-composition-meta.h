@@ -43,8 +43,10 @@ GType ges_frame_composition_meta_api_get_type (void);
  * @meta: the parent #GstMeta.
  * @posx: The desired x position.
  * @posy: The desired y position.
- * @height: The desired height of the video.
- * @width: The desired width of the video.
+ * @height: The desired height of the video. -1 means that no scaling should be
+ * applied.
+ * @width: The desired width of the video. -1 means that no scaling should beapplied
+ * applied.
  * @zorder: The desired z order.
  * @operator:The blending operator for the source.
  *
@@ -59,12 +61,16 @@ struct _GESFrameCompositionMeta {
   GstMeta meta;
 
   gdouble alpha;
-  gint posx;
-  gint posy;
-  gint height;
-  gint width;
+  gdouble posx;
+  gdouble posy;
+  gdouble height;
+  gdouble width;
   guint zorder;
+#ifdef __cplusplus
+  gint _operator;
+#else
   gint operator;
+#endif
 };
 
 GES_API

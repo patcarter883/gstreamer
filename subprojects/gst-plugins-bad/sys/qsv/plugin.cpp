@@ -61,6 +61,12 @@
 #include <gst/va/gstva.h>
 #endif
 
+#ifdef HAVE_GST_D3D12
+#include <gst/d3d12/gstd3d12.h>
+#endif
+
+#include <glib/gi18n-lib.h>
+
 GST_DEBUG_CATEGORY (gst_qsv_debug);
 GST_DEBUG_CATEGORY (gst_qsv_allocator_debug);
 
@@ -214,8 +220,11 @@ plugin_init (GstPlugin * plugin)
 #ifdef G_OS_WIN32
   /* D3D11 Video API is supported since Windows 8.
    * Do we want to support old OS (Windows 7 for example) with D3D9 ?? */
-  if (!IsWindows8OrGreater ())
+  if (!IsWindows8OrGreater ()) {
+    gst_plugin_add_status_warning (plugin,
+        N_("This plugin requires at least Windows 8 or newer."));
     return TRUE;
+  }
 
   enc_rank = GST_RANK_PRIMARY;
 #endif
@@ -225,11 +234,15 @@ plugin_init (GstPlugin * plugin)
       "qsvallocator", 0, "qsvallocator");
 
   loader = gst_qsv_get_loader ();
-  if (!loader)
+  if (!loader) {
+    // FIXME: any status/error/warning message we should show here?
     return TRUE;
+  }
 
   platform_devices = gst_qsv_get_platform_devices ();
   if (!platform_devices) {
+    gst_plugin_add_status_warning (plugin,
+        N_("No Intel graphics cards detected!"));
     gst_qsv_deinit ();
     return TRUE;
   }
@@ -241,6 +254,7 @@ plugin_init (GstPlugin * plugin)
     mfxSession session = nullptr;
     mfxImplDescription *desc = nullptr;
     GstObject *device = nullptr;
+    gboolean d3d12_interop = FALSE;
 
     status = MFXEnumImplementations (loader,
         i, MFX_IMPLCAPS_IMPLDESCSTRUCTURE, (mfxHDL *) & desc);
@@ -259,16 +273,45 @@ plugin_init (GstPlugin * plugin)
     if (!session)
       goto next;
 
+#ifdef HAVE_GST_D3D12
+    {
+      gint64 luid;
+      g_object_get (device, "adapter-luid", &luid, nullptr);
+      auto device12 = gst_d3d12_device_new_for_adapter_luid (luid);
+      if (device12) {
+        auto handle12 = gst_d3d12_device_get_device_handle (device12);
+        D3D12_FEATURE_DATA_D3D12_OPTIONS4 feature_data = { };
+        auto hr = handle12->CheckFeatureSupport (D3D12_FEATURE_D3D12_OPTIONS4,
+            &feature_data, sizeof (feature_data));
+        if (SUCCEEDED (hr) && feature_data.SharedResourceCompatibilityTier >=
+            D3D12_SHARED_RESOURCE_COMPATIBILITY_TIER_2) {
+          GST_INFO_OBJECT (device, "Device supports D3D12 resource share");
+          d3d12_interop = TRUE;
+        } else {
+          GST_INFO_OBJECT (device,
+              "Device does not support D3D12 resource share");
+        }
+
+        gst_object_unref (device12);
+      }
+    }
+#endif
+
     gst_qsv_h264_dec_register (plugin, GST_RANK_MARGINAL, i, device, session);
     gst_qsv_h265_dec_register (plugin, GST_RANK_MARGINAL, i, device, session);
     gst_qsv_jpeg_dec_register (plugin, GST_RANK_SECONDARY, i, device, session);
     gst_qsv_vp9_dec_register (plugin, GST_RANK_MARGINAL, i, device, session);
 
-    gst_qsv_h264_enc_register (plugin, enc_rank, i, device, session);
-    gst_qsv_h265_enc_register (plugin, enc_rank, i, device, session);
-    gst_qsv_jpeg_enc_register (plugin, enc_rank, i, device, session);
-    gst_qsv_vp9_enc_register (plugin, enc_rank, i, device, session);
-    gst_qsv_av1_enc_register (plugin, enc_rank, i, device, session);
+    gst_qsv_h264_enc_register (plugin,
+        enc_rank, i, device, session, d3d12_interop);
+    gst_qsv_h265_enc_register (plugin,
+        enc_rank, i, device, session, d3d12_interop);
+    gst_qsv_jpeg_enc_register (plugin,
+        enc_rank, i, device, session, d3d12_interop);
+    gst_qsv_vp9_enc_register (plugin,
+        enc_rank, i, device, session, d3d12_interop);
+    gst_qsv_av1_enc_register (plugin,
+        enc_rank, i, device, session, d3d12_interop);
 
   next:
     MFXDispReleaseImplDescription (loader, desc);
