@@ -26,10 +26,10 @@
 #ifndef __GST_AV1_PARSER_H__
 #define __GST_AV1_PARSER_H__
 
-#ifndef GST_USE_UNSTABLE_API
-#warning "The AV1 parsing library is unstable API and may change in future."
-#warning "You can define GST_USE_UNSTABLE_API to avoid this warning."
-#endif
+// #ifndef GST_USE_UNSTABLE_API
+// #pragma message ("The AV1 parsing library is unstable API and may change in future.")
+// #pragma message ("You can define GST_USE_UNSTABLE_API to avoid this warning.")
+// #endif
 
 #include <gst/gst.h>
 #include <gst/codecparsers/codecparsers-prelude.h>

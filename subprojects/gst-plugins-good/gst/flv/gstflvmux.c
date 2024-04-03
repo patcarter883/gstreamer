@@ -2008,7 +2008,7 @@ gst_flv_mux_write_buffer (GstFlvMux * mux, GstFlvMuxPad * pad,
     guint32 total_consumed, consumed;
     GstAV1OBU obu;
     GstAV1ParserResult res;
-    gboolean obu_seq_header_found = FALSE;
+    // gboolean obu_seq_header_found = FALSE;
     GstBuffer *partial_buffer = NULL;
 
     if (!gst_buffer_map (buffer, &map, GST_MAP_READ)) {
