@@ -178,21 +178,16 @@ gst_msdk_context_use_vaapi (GstMsdkContext * context)
   }
 
   display_drm = gst_va_display_drm_new_from_path (path);
+  g_free (path);
+
   if (!display_drm) {
     GST_ERROR ("Couldn't create a VA DRM display");
-    goto failed;
+    return FALSE;
   }
-  g_free (path);
 
   priv->display = display_drm;
 
   return TRUE;
-
-failed:
-  if (display_drm)
-    gst_object_unref (display_drm);
-
-  return FALSE;
 }
 #else
 static GstD3D11Device *
@@ -381,6 +376,10 @@ gst_msdk_context_finalize (GObject * obj)
 
   /* child sessions will be closed when the parent session is closed */
   if (priv->parent_context) {
+    /* A context with parent_context can also be a parent to others,
+     * and we need to check its child_session_list */
+    if (priv->child_session_list)
+      g_list_free_full (priv->child_session_list, release_child_session);
     gst_object_unref (priv->parent_context);
     goto done;
   } else
@@ -413,6 +412,7 @@ GstMsdkContext *
 gst_msdk_context_new (gboolean hardware)
 {
   GstMsdkContext *obj = g_object_new (GST_TYPE_MSDK_CONTEXT, NULL);
+  gst_object_ref_sink (obj);
 
   if (obj && !gst_msdk_context_open (obj, hardware)) {
     gst_object_unref (obj);
@@ -438,15 +438,18 @@ GstMsdkContext *
 gst_msdk_context_new_with_parent (GstMsdkContext * parent)
 {
   mfxStatus status;
-  GstMsdkContext *obj = g_object_new (GST_TYPE_MSDK_CONTEXT, NULL);
-  GstMsdkContextPrivate *priv = obj->priv;
-  GstMsdkContextPrivate *parent_priv = parent->priv;
+  GstMsdkContext *obj;
+  GstMsdkContextPrivate *priv;
+  GstMsdkContextPrivate *parent_priv;
   mfxVersion version;
   mfxIMPL impl;
   MsdkSession child_msdk_session;
   mfxHandleType handle_type = 0;
   mfxHDL handle = NULL, hardware_handle = NULL;
 
+  g_return_val_if_fail (GST_IS_MSDK_CONTEXT (parent), NULL);
+
+  parent_priv = parent->priv;
   status = MFXQueryIMPL (parent_priv->session.session, &impl);
 
   if (status == MFX_ERR_NONE)
@@ -455,7 +458,6 @@ gst_msdk_context_new_with_parent (GstMsdkContext * parent)
   if (status != MFX_ERR_NONE) {
     GST_ERROR ("Failed to query the session attributes (%s)",
         msdk_status_to_string (status));
-    gst_object_unref (obj);
     return NULL;
   }
 
@@ -472,7 +474,6 @@ gst_msdk_context_new_with_parent (GstMsdkContext * parent)
     if (status != MFX_ERR_NONE || !handle) {
       GST_ERROR ("Failed to get session handle (%s)",
           msdk_status_to_string (status));
-      gst_object_unref (obj);
       return NULL;
     }
   }
@@ -489,7 +490,6 @@ gst_msdk_context_new_with_parent (GstMsdkContext * parent)
   if (status != MFX_ERR_NONE) {
     GST_ERROR ("Failed to create a child mfx session (%s)",
         msdk_status_to_string (status));
-    gst_object_unref (obj);
     return NULL;
   }
 
@@ -502,7 +502,6 @@ gst_msdk_context_new_with_parent (GstMsdkContext * parent)
       GST_ERROR ("Failed to set a HW handle (%s)",
           msdk_status_to_string (status));
       MFXClose (child_msdk_session.session);
-      gst_object_unref (obj);
       return NULL;
     }
   }
@@ -514,10 +513,13 @@ gst_msdk_context_new_with_parent (GstMsdkContext * parent)
     GST_ERROR ("Failed to join two sessions (%s)",
         msdk_status_to_string (status));
     MFXClose (child_msdk_session.session);
-    gst_object_unref (obj);
     return NULL;
   }
 #endif
+
+  obj = g_object_new (GST_TYPE_MSDK_CONTEXT, NULL);
+  gst_object_ref_sink (obj);
+  priv = obj->priv;
 
   /* Set loader to NULL for child session */
   priv->session.loader = NULL;
@@ -554,6 +556,7 @@ gst_msdk_context_new_with_va_display (GstObject * display_obj,
     return NULL;
 
   obj = g_object_new (GST_TYPE_MSDK_CONTEXT, NULL);
+  gst_object_ref_sink (obj);
 
   priv = obj->priv;
   priv->display = gst_object_ref (va_display);
@@ -604,6 +607,7 @@ gst_msdk_context_new_with_d3d11_device (GstD3D11Device * device,
   HRESULT hr;
 
   obj = g_object_new (GST_TYPE_MSDK_CONTEXT, NULL);
+  gst_object_ref_sink (obj);
 
   priv = obj->priv;
   priv->device = gst_object_ref (device);

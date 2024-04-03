@@ -201,7 +201,7 @@ _get_sinkpad_pool (GstElement * element, gpointer data)
   GstVaBaseEnc *base = GST_VA_BASE_ENC (element);
   GstAllocator *allocator;
   GstAllocationParams params = { 0, };
-  guint size, usage_hint;
+  guint usage_hint;
   GArray *surface_formats = NULL;
   GstCaps *caps = NULL;
 
@@ -219,8 +219,6 @@ _get_sinkpad_pool (GstElement * element, gpointer data)
 
   gst_allocation_params_init (&params);
 
-  size = GST_VIDEO_INFO_SIZE (&base->in_info);
-
   surface_formats = gst_va_encoder_get_surface_formats (base->encoder);
 
   allocator = gst_va_allocator_new (base->display, surface_formats);
@@ -228,8 +226,8 @@ _get_sinkpad_pool (GstElement * element, gpointer data)
   usage_hint = va_get_surface_usage_hint (base->display,
       VAEntrypointEncSlice, GST_PAD_SINK, FALSE);
 
-  base->priv->raw_pool = gst_va_pool_new_with_config (caps, size, 1, 0,
-      usage_hint, GST_VA_FEATURE_AUTO, allocator, &params);
+  base->priv->raw_pool = gst_va_pool_new_with_config (caps, 1, 0, usage_hint,
+      GST_VA_FEATURE_AUTO, allocator, &params);
   gst_clear_caps (&caps);
 
   if (!base->priv->raw_pool) {
@@ -271,9 +269,10 @@ gst_va_base_enc_import_input_buffer (GstVaBaseEnc * base,
   return gst_va_buffer_importer_import (&importer, inbuf, buf);
 }
 
-static GstBuffer *
+GstBuffer *
 gst_va_base_enc_create_output_buffer (GstVaBaseEnc * base,
-    GstVaEncodePicture * picture)
+    GstVaEncodePicture * picture, const guint8 * prefix_data,
+    guint prefix_data_len)
 {
   guint coded_size;
   goffset offset;
@@ -302,7 +301,7 @@ gst_va_base_enc_create_output_buffer (GstVaBaseEnc * base,
     coded_size += seg->size;
 
   buf = gst_video_encoder_allocate_output_buffer (GST_VIDEO_ENCODER_CAST (base),
-      coded_size);
+      coded_size + prefix_data_len);
   if (!buf) {
     va_unmap_buffer (base->display, picture->coded_buffer);
     GST_ERROR_OBJECT (base, "Failed to allocate output buffer, size %d",
@@ -311,6 +310,12 @@ gst_va_base_enc_create_output_buffer (GstVaBaseEnc * base,
   }
 
   offset = 0;
+  if (prefix_data) {
+    g_assert (prefix_data_len > 0);
+    gst_buffer_fill (buf, offset, prefix_data, prefix_data_len);
+    offset += prefix_data_len;
+  }
+
   for (seg = seg_list; seg; seg = seg->next) {
     gsize write_size;
 
@@ -330,6 +335,53 @@ gst_va_base_enc_create_output_buffer (GstVaBaseEnc * base,
 error:
   gst_clear_buffer (&buf);
   return NULL;
+}
+
+/* Return 0 means error and -1 means not enough data. */
+gint
+gst_va_base_enc_copy_output_data (GstVaBaseEnc * base,
+    GstVaEncodePicture * picture, guint8 * data, gint size)
+{
+  guint coded_size;
+  VASurfaceID surface;
+  VACodedBufferSegment *seg, *seg_list;
+  gint ret_sz = 0;
+
+  /* Wait for encoding to finish */
+  surface = gst_va_encode_picture_get_raw_surface (picture);
+  if (!va_sync_surface (base->display, surface))
+    goto out;
+
+  seg_list = NULL;
+  if (!va_map_buffer (base->display, picture->coded_buffer,
+          GST_MAP_READ, (gpointer *) & seg_list))
+    goto out;
+
+  if (!seg_list) {
+    va_unmap_buffer (base->display, picture->coded_buffer);
+    GST_WARNING_OBJECT (base, "coded buffer has no segment list");
+    goto out;
+  }
+
+  coded_size = 0;
+  for (seg = seg_list; seg; seg = seg->next)
+    coded_size += seg->size;
+
+  if (coded_size > size) {
+    GST_DEBUG_OBJECT (base, "Not enough space for coded data");
+    ret_sz = -1;
+    goto out;
+  }
+
+  for (seg = seg_list; seg; seg = seg->next) {
+    memcpy (data + ret_sz, seg->buf, seg->size);
+    ret_sz += seg->size;
+  }
+
+  va_unmap_buffer (base->display, picture->coded_buffer);
+
+out:
+  return ret_sz;
 }
 
 static GstAllocator *
@@ -356,38 +408,33 @@ gst_va_base_enc_propose_allocation (GstVideoEncoder * venc, GstQuery * query)
   GstAllocationParams params = { 0, };
   GstBufferPool *pool;
   GstCaps *caps;
-  GstVideoInfo info;
   gboolean need_pool = FALSE;
-  guint size, usage_hint;
+  guint size = 0, usage_hint;
 
   gst_query_parse_allocation (query, &caps, &need_pool);
   if (!caps)
     return FALSE;
 
-  if (!gst_video_info_from_caps (&info, caps)) {
-    GST_ERROR_OBJECT (base, "Cannot parse caps %" GST_PTR_FORMAT, caps);
-    return FALSE;
-  }
-
   usage_hint = va_get_surface_usage_hint (base->display,
       VAEntrypointEncSlice, GST_PAD_SINK, gst_video_is_dma_drm_caps (caps));
-
-  size = GST_VIDEO_INFO_SIZE (&info);
 
   gst_allocation_params_init (&params);
 
   if (!(allocator = _allocator_from_caps (base, caps)))
     return FALSE;
 
-  pool = gst_va_pool_new_with_config (caps, size, 1, 0, usage_hint,
+  pool = gst_va_pool_new_with_config (caps, 1, 0, usage_hint,
       GST_VA_FEATURE_AUTO, allocator, &params);
   if (!pool) {
     gst_object_unref (allocator);
     goto config_failed;
   }
 
+  if (!gst_va_pool_get_buffer_size (pool, &size))
+    goto config_failed;
+
   gst_query_add_allocation_param (query, allocator, &params);
-  gst_query_add_allocation_pool (query, pool, size, 0, 0);
+  gst_query_add_allocation_pool (query, pool, size, 1, 0);
 
   GST_DEBUG_OBJECT (base,
       "proposing %" GST_PTR_FORMAT " with allocator %" GST_PTR_FORMAT,
@@ -411,37 +458,38 @@ config_failed:
 static GstFlowReturn
 _push_buffer_to_downstream (GstVaBaseEnc * base, GstVideoCodecFrame * frame)
 {
-  GstVaEncodePicture *enc_picture;
   GstVaBaseEncClass *base_class = GST_VA_BASE_ENC_GET_CLASS (base);
-  GstBuffer *buf;
+  GstFlowReturn ret;
+  gboolean complete = TRUE;
 
-  if (base_class->prepare_output)
-    base_class->prepare_output (base, frame);
-
-  enc_picture =
-      *((GstVaEncodePicture **) gst_video_codec_frame_get_user_data (frame));
-
-  buf = gst_va_base_enc_create_output_buffer (base, enc_picture);
-  if (!buf) {
-    GST_ERROR_OBJECT (base, "Failed to create output buffer");
+  if (!base_class->prepare_output (base, frame, &complete)) {
+    GST_ERROR_OBJECT (base, "Failed to prepare output");
     goto error;
   }
 
-  gst_buffer_replace (&frame->output_buffer, buf);
-  gst_clear_buffer (&buf);
+  if (frame->output_buffer)
+    GST_LOG_OBJECT (base, "Push to downstream: frame system_frame_number: %d,"
+        " pts: %" GST_TIME_FORMAT ", dts: %" GST_TIME_FORMAT
+        " duration: %" GST_TIME_FORMAT ", buffer size: %" G_GSIZE_FORMAT,
+        frame->system_frame_number, GST_TIME_ARGS (frame->pts),
+        GST_TIME_ARGS (frame->dts), GST_TIME_ARGS (frame->duration),
+        gst_buffer_get_size (frame->output_buffer));
 
-  GST_LOG_OBJECT (base, "Push to downstream: frame system_frame_number: %d,"
-      " pts: %" GST_TIME_FORMAT ", dts: %" GST_TIME_FORMAT
-      " duration: %" GST_TIME_FORMAT ", buffer size: %" G_GSIZE_FORMAT,
-      frame->system_frame_number, GST_TIME_ARGS (frame->pts),
-      GST_TIME_ARGS (frame->dts), GST_TIME_ARGS (frame->duration),
-      gst_buffer_get_size (frame->output_buffer));
+  if (complete) {
+    ret = gst_video_encoder_finish_frame (GST_VIDEO_ENCODER (base), frame);
+  } else {
+    if (frame->output_buffer) {
+      ret = gst_video_encoder_finish_subframe (GST_VIDEO_ENCODER (base), frame);
+    } else {
+      /* Allow to output later and no data here. */
+      ret = GST_FLOW_OK;
+    }
+  }
 
-  return gst_video_encoder_finish_frame (GST_VIDEO_ENCODER (base), frame);
+  return ret;
 
 error:
   gst_clear_buffer (&frame->output_buffer);
-  gst_clear_buffer (&buf);
   gst_video_encoder_finish_frame (GST_VIDEO_ENCODER (base), frame);
 
   return GST_FLOW_ERROR;
@@ -925,14 +973,22 @@ gst_va_base_enc_add_rate_control_parameter (GstVaBaseEnc * base,
       .bits_per_second = max_bitrate_bits,
       .target_percentage = target_percentage,
       .window_size = window_size,
-      .initial_qp = qp_i,
       .min_qp = min_qp,
       .max_qp = max_qp,
       .rc_flags.bits.mb_rate_control = mbbrc,
-      .quality_factor = 0,
     },
   };
   /* *INDENT-ON* */
+
+  if (rc_mode == VA_RC_ICQ) {
+    g_assert (min_qp == 0);
+    rate_control.rate_control.ICQ_quality_factor = qp_i;
+  } else if (rc_mode == VA_RC_QVBR) {
+    g_assert (min_qp == 0);
+    rate_control.rate_control.quality_factor = qp_i;
+  } else {
+    rate_control.rate_control.initial_qp = qp_i;
+  }
 
   if (!gst_va_encoder_add_param (base->encoder, picture,
           VAEncMiscParameterBufferType, &rate_control, sizeof (rate_control))) {
@@ -1017,7 +1073,8 @@ gst_va_base_enc_add_hrd_parameter (GstVaBaseEnc * base,
   };
   /* *INDENT-ON* */
 
-  if (rc_mode == VA_RC_NONE || rc_mode == VA_RC_CQP || rc_mode == VA_RC_VCM)
+  if (rc_mode == VA_RC_NONE || rc_mode == VA_RC_CQP ||
+      rc_mode == VA_RC_VCM || rc_mode == VA_RC_ICQ)
     return TRUE;
 
   if (!gst_va_encoder_add_param (base->encoder, picture,

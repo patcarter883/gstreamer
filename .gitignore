@@ -71,3 +71,5 @@ subprojects/*/
 build/
 builddir/
 env/
+# apk files from CI (or following its commands)
+*.apk

@@ -189,6 +189,8 @@ enum
 #define DEFAULT_BLOCKSIZE       4096
 #define DEFAULT_NUM_BUFFERS     -1
 #define DEFAULT_DO_TIMESTAMP    FALSE
+/* FIXME 2.0: automatic_eos should probably be disabled by default,
+ * see https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/1330 */
 #define DEFAULT_AUTOMATIC_EOS   TRUE
 
 enum
@@ -2635,7 +2637,8 @@ retry_create:
 
       /* no need keep old buffer while in pause */
       if (ret == GST_FLOW_OK && own_res_buf)
-        gst_buffer_unref (res_buf);
+        gst_clear_buffer (&res_buf);
+      gst_clear_buffer_list (&src->priv->pending_bufferlist);
 
       wait_ret = gst_base_src_wait_playing_unlocked (src);
       if (wait_ret != GST_FLOW_OK) {
@@ -2653,7 +2656,8 @@ retry_create:
   if (G_UNLIKELY (g_atomic_int_get (&src->priv->has_pending_eos))) {
     if (ret == GST_FLOW_OK) {
       if (own_res_buf)
-        gst_buffer_unref (res_buf);
+        gst_clear_buffer (&res_buf);
+      gst_clear_buffer_list (&src->priv->pending_bufferlist);
     }
     src->priv->forced_eos = TRUE;
     goto eos;
@@ -3731,7 +3735,7 @@ not_activated_yet:
   {
     GST_PAD_STREAM_UNLOCK (basesrc->srcpad);
     gst_base_src_stop (basesrc);
-    GST_WARNING_OBJECT (basesrc, "pad not activated yet");
+    GST_INFO_OBJECT (basesrc, "pad not activated yet");
     ret = GST_FLOW_ERROR;
     goto error;
   }

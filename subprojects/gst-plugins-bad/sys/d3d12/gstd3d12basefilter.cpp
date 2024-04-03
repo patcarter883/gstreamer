@@ -22,9 +22,6 @@
 #endif
 
 #include "gstd3d12basefilter.h"
-#include "gstd3d12device.h"
-#include "gstd3d12utils.h"
-#include "gstd3d12memory.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_d3d12_base_filter_debug);
 #define GST_CAT_DEFAULT gst_d3d12_base_filter_debug
@@ -205,7 +202,7 @@ gst_d3d12_base_filter_before_transform (GstBaseTransform * trans,
 
   dmem = GST_D3D12_MEMORY_CAST (mem);
   /* d3d12 devices are singletons per adapter */
-  if (dmem->device == self->device)
+  if (gst_d3d12_device_is_equal (dmem->device, self->device))
     return;
 
   GST_INFO_OBJECT (self, "Updating device %" GST_PTR_FORMAT " -> %"

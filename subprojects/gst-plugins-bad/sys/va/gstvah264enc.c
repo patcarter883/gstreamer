@@ -100,10 +100,10 @@ enum
   PROP_BITRATE,
   PROP_TARGET_PERCENTAGE,
   PROP_TARGET_USAGE,
-  PROP_RATE_CONTROL,
   PROP_CPB_SIZE,
   PROP_AUD,
   PROP_CC,
+  PROP_RATE_CONTROL,
   N_PROPERTIES
 };
 
@@ -456,7 +456,7 @@ _ensure_rate_control (GstVaH264Enc * self)
    * speed and quality, while the others control encoding bit rate and
    * quality. The lower value has better quality(maybe bigger MV search
    * range) but slower speed, the higher value has faster speed but lower
-   * quality.
+   * quality. It is valid for all modes.
    *
    * The possible composition to control the bit rate and quality:
    *
@@ -491,6 +491,17 @@ _ensure_rate_control (GstVaH264Enc * self)
    *    target bit rate, and encoder will try its best to make the QP
    *    with in the ["max-qp", "min-qp"] range. Other paramters are
    *    ignored.
+   *
+   * 5. ICQ mode: "rate-control=ICQ", which is similar to CQP mode
+   *    except that its QP may be increased or decreaed to avoid huge
+   *    bit rate fluctuation. The "qpi" specifies a quality factor
+   *    as the base quality value. Other properties are ignored.
+   *
+   * 6. QVBR mode: "rate-control=QVBR", which is similar to VBR mode
+   *    with the same usage of "bitrate", "target-percentage" and
+   *    "cpb-size" properties. Besides that, the "qpi" specifies a
+   *    quality factor as the base quality value which the driver
+   *    should try its best to meet. Other properties are ignored.
    */
 
   GstVaBaseEnc *base = GST_VA_BASE_ENC (self);
@@ -528,6 +539,17 @@ _ensure_rate_control (GstVaH264Enc * self)
     }
   } else {
     self->rc.rc_ctrl_mode = VA_RC_NONE;
+  }
+
+  /* ICQ mode and QVBR mode do not need max/min qp. */
+  if (self->rc.rc_ctrl_mode == VA_RC_ICQ || self->rc.rc_ctrl_mode == VA_RC_QVBR) {
+    self->rc.min_qp = 0;
+    self->rc.max_qp = 51;
+
+    update_property_uint (base, &self->prop.min_qp, self->rc.min_qp,
+        PROP_MIN_QP);
+    update_property_uint (base, &self->prop.max_qp, self->rc.max_qp,
+        PROP_MAX_QP);
   }
 
   if (self->rc.min_qp > self->rc.max_qp) {
@@ -585,7 +607,8 @@ _ensure_rate_control (GstVaH264Enc * self)
 
   /* Calculate a bitrate is not set. */
   if ((self->rc.rc_ctrl_mode == VA_RC_CBR || self->rc.rc_ctrl_mode == VA_RC_VBR
-          || self->rc.rc_ctrl_mode == VA_RC_VCM) && bitrate == 0) {
+          || self->rc.rc_ctrl_mode == VA_RC_VCM
+          || self->rc.rc_ctrl_mode == VA_RC_QVBR) && bitrate == 0) {
     /* Default compression: 48 bits per macroblock in "high-compression" mode */
     guint bits_per_mb = 48;
     guint64 factor;
@@ -609,7 +632,11 @@ _ensure_rate_control (GstVaH264Enc * self)
   /* Adjust the setting based on RC mode. */
   switch (self->rc.rc_ctrl_mode) {
     case VA_RC_NONE:
+    case VA_RC_ICQ:
+      self->rc.qp_p = self->rc.qp_b = 26;
+      /* Fall through. */
     case VA_RC_CQP:
+      bitrate = 0;
       self->rc.max_bitrate = 0;
       self->rc.target_bitrate = 0;
       self->rc.target_percentage = 0;
@@ -622,11 +649,14 @@ _ensure_rate_control (GstVaH264Enc * self)
       self->rc.qp_i = self->rc.qp_p = self->rc.qp_b = 26;
       break;
     case VA_RC_VBR:
+      self->rc.qp_i = 26;
+      /* Fall through. */
+    case VA_RC_QVBR:
+      self->rc.qp_p = self->rc.qp_b = 26;
       g_assert (self->rc.target_percentage >= 10);
       self->rc.max_bitrate = (guint) gst_util_uint64_scale_int (bitrate,
           100, self->rc.target_percentage);
       self->rc.target_bitrate = bitrate;
-      self->rc.qp_i = self->rc.qp_p = self->rc.qp_b = 26;
       break;
     case VA_RC_VCM:
       self->rc.max_bitrate = bitrate;
@@ -647,11 +677,12 @@ _ensure_rate_control (GstVaH264Enc * self)
       break;
   }
 
-  GST_DEBUG_OBJECT (self, "Max bitrate: %u bits/sec, "
-      "Target bitrate: %u bits/sec", self->rc.max_bitrate,
-      self->rc.target_bitrate);
+  GST_DEBUG_OBJECT (self, "Max bitrate: %u kbps, target bitrate: %u kbps",
+      self->rc.max_bitrate, self->rc.target_bitrate);
 
-  if (self->rc.rc_ctrl_mode != VA_RC_NONE && self->rc.rc_ctrl_mode != VA_RC_CQP)
+  if (self->rc.rc_ctrl_mode == VA_RC_CBR || self->rc.rc_ctrl_mode == VA_RC_VBR
+      || self->rc.rc_ctrl_mode == VA_RC_VCM
+      || self->rc.rc_ctrl_mode == VA_RC_QVBR)
     _calculate_bitrate_hrd (self);
 
   /* update & notifications */
@@ -1528,6 +1559,7 @@ gst_va_h264_enc_reset_state (GstVaBaseEnc * base)
 static gboolean
 gst_va_h264_enc_reconfig (GstVaBaseEnc * base)
 {
+  GstVaBaseEncClass *klass = GST_VA_BASE_ENC_GET_CLASS (base);
   GstVideoEncoder *venc = GST_VIDEO_ENCODER (base);
   GstVaH264Enc *self = GST_VA_H264_ENC (base);
   GstCaps *out_caps, *reconf_caps = NULL;
@@ -1638,7 +1670,7 @@ gst_va_h264_enc_reconfig (GstVaBaseEnc * base)
   /* Add some tags */
   gst_va_base_enc_add_codec_tag (base, "H264");
 
-  out_caps = gst_va_profile_caps (base->profile);
+  out_caps = gst_va_profile_caps (base->profile, klass->entrypoint);
   g_assert (out_caps);
   out_caps = gst_caps_fixate (out_caps);
 
@@ -3037,11 +3069,13 @@ gst_va_h264_enc_flush (GstVideoEncoder * venc)
   return GST_VIDEO_ENCODER_CLASS (parent_class)->flush (venc);
 }
 
-static void
-gst_va_h264_enc_prepare_output (GstVaBaseEnc * base, GstVideoCodecFrame * frame)
+static gboolean
+gst_va_h264_enc_prepare_output (GstVaBaseEnc * base,
+    GstVideoCodecFrame * frame, gboolean * complete)
 {
   GstVaH264Enc *self = GST_VA_H264_ENC (base);
   GstVaH264EncFrame *frame_enc;
+  GstBuffer *buf;
 
   frame_enc = _enc_frame (frame);
 
@@ -3053,6 +3087,19 @@ gst_va_h264_enc_prepare_output (GstVaBaseEnc * base, GstVideoCodecFrame * frame)
       (gint64) self->gop.num_reorder_frames);
   base->output_frame_count++;
   frame->duration = base->frame_duration;
+
+  buf = gst_va_base_enc_create_output_buffer (base,
+      frame_enc->picture, NULL, 0);
+  if (!buf) {
+    GST_ERROR_OBJECT (base, "Failed to create output buffer");
+    return FALSE;
+  }
+
+  gst_buffer_replace (&frame->output_buffer, buf);
+  gst_clear_buffer (&buf);
+
+  *complete = TRUE;
+  return TRUE;
 }
 
 static gint
@@ -3247,6 +3294,13 @@ gst_va_h264_enc_set_property (GObject * object, guint prop_id,
 {
   GstVaH264Enc *self = GST_VA_H264_ENC (object);
   GstVaBaseEnc *base = GST_VA_BASE_ENC (self);
+  GstVaEncoder *encoder = NULL;
+  gboolean no_effect;
+
+  gst_object_replace ((GstObject **) (&encoder), (GstObject *) base->encoder);
+  no_effect = (encoder && gst_va_encoder_is_open (encoder));
+  if (encoder)
+    gst_object_unref (encoder);
 
   GST_OBJECT_LOCK (self);
 
@@ -3277,14 +3331,17 @@ gst_va_h264_enc_set_property (GObject * object, guint prop_id,
       break;
     case PROP_QP_I:
       self->prop.qp_i = g_value_get_uint (value);
+      no_effect = FALSE;
       g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     case PROP_QP_P:
       self->prop.qp_p = g_value_get_uint (value);
+      no_effect = FALSE;
       g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     case PROP_QP_B:
       self->prop.qp_b = g_value_get_uint (value);
+      no_effect = FALSE;
       g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     case PROP_DCT8X8:
@@ -3323,22 +3380,28 @@ gst_va_h264_enc_set_property (GObject * object, guint prop_id,
     }
     case PROP_BITRATE:
       self->prop.bitrate = g_value_get_uint (value);
+      no_effect = FALSE;
       g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     case PROP_TARGET_PERCENTAGE:
       self->prop.target_percentage = g_value_get_uint (value);
+      no_effect = FALSE;
       g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     case PROP_TARGET_USAGE:
       self->prop.target_usage = g_value_get_uint (value);
+      no_effect = FALSE;
       g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     case PROP_RATE_CONTROL:
       self->prop.rc_ctrl = g_value_get_enum (value);
+      no_effect = FALSE;
       g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     case PROP_CPB_SIZE:
       self->prop.cpb_size = g_value_get_uint (value);
+      no_effect = FALSE;
+      g_atomic_int_set (&GST_VA_BASE_ENC (self)->reconf, TRUE);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -3346,14 +3409,12 @@ gst_va_h264_enc_set_property (GObject * object, guint prop_id,
 
   GST_OBJECT_UNLOCK (self);
 
+  if (no_effect) {
 #ifndef GST_DISABLE_GST_DEBUG
-  if (!g_atomic_int_get (&GST_VA_BASE_ENC (self)->reconf)
-      && base->encoder && gst_va_encoder_is_open (base->encoder)) {
-    GST_WARNING_OBJECT (self, "Property `%s` change ignored while processing.",
-        pspec->name);
-  }
+    GST_WARNING_OBJECT (self, "Property `%s` change may not take effect "
+        "until the next encoder reconfig.", pspec->name);
 #endif
-
+  }
 }
 
 static void
@@ -3642,7 +3703,8 @@ gst_va_h264_enc_class_init (gpointer g_klass, gpointer class_data)
    */
   properties[PROP_QP_I] = g_param_spec_uint ("qpi", "I Frame QP",
       "The quantizer value for I frame. In CQP mode, it specifies the QP of I "
-      "frame, in other mode, it specifies the init QP of all frames", 0, 51, 26,
+      "frame. In ICQ and QVBR modes, it specifies a quality factor. In other "
+      "modes, it is ignored", 0, 51, 26,
       param_flags | GST_PARAM_MUTABLE_PLAYING);
 
   /**

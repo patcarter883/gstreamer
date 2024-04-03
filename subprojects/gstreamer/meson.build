@@ -1,6 +1,6 @@
 project('gstreamer', 'c',
-  version : '1.23.0.1',
-  meson_version : '>= 0.62',
+  version : '1.25.0.1',
+  meson_version : '>= 1.1',
   default_options : [ 'warning_level=1',
                       'buildtype=debugoptimized' ])
 
@@ -313,7 +313,7 @@ if cc.compiles('''#include <linux/futex.h>
                int main (int argc, char ** argv) {
                  syscall (__NR_futex_time64, NULL, FUTEX_WAKE, FUTEX_WAIT);
                  return 0;
-               }''', name : 'futex(2) system call')
+               }''', name : 'futex_time64(2) system call')
   cdata.set('HAVE_FUTEX_TIME64', 1)
 endif
 
@@ -680,7 +680,7 @@ endif
 configure_file(output : 'config.h', configuration : cdata)
 install_data('gst-element-check-1.0.m4', install_dir : join_paths(get_option('datadir'), 'aclocal'))
 
-meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.20.0', meson.project_version())
+meson.add_dist_script('scripts/gen-changelog.py', meson.project_name(), '1.22.0', meson.project_version())
 
 plugin_names = []
 gst_plugins = []

@@ -1086,7 +1086,7 @@ gst_vulkan_operation_add_dependency_frame (GstVulkanOperation * self,
     GST_OBJECT_UNLOCK (self);
     return TRUE;
   }
-#else
+#endif /* synchronization2 */
   if (priv->has_timeline && wait_stage <= G_MAXUINT32) {
     if (!priv->deps.signal_semaphores) {
       priv->deps.signal_semaphores =
@@ -1145,7 +1145,8 @@ gst_vulkan_operation_add_dependency_frame (GstVulkanOperation * self,
     GST_OBJECT_UNLOCK (self);
     return TRUE;
   }
-#endif /* synchronization2 */
+
+  GST_OBJECT_UNLOCK (self);
 #endif /* timeline semaphore */
 
   return TRUE;
@@ -1437,8 +1438,14 @@ gst_vulkan_operation_pipeline_barrier2 (GstVulkanOperation * self,
 GstVulkanOperation *
 gst_vulkan_operation_new (GstVulkanCommandPool * cmd_pool)
 {
+  GstVulkanOperation *self;
+
   g_return_val_if_fail (GST_IS_VULKAN_COMMAND_POOL (cmd_pool), NULL);
 
-  return g_object_new (GST_TYPE_VULKAN_OPERATION, "command-pool", cmd_pool,
+  self = g_object_new (GST_TYPE_VULKAN_OPERATION, "command-pool", cmd_pool,
       NULL);
+
+  gst_object_ref_sink (self);
+
+  return self;
 }

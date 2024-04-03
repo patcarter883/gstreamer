@@ -1,5 +1,5 @@
 project('gstreamer-full', 'c',
-  version : '1.23.0.1',
+  version : '1.25.0.1',
   meson_version : '>= 1.1',
   default_options : ['buildtype=debugoptimized',
                      # Needed due to https://github.com/mesonbuild/meson/issues/1889,
@@ -340,6 +340,7 @@ devenv.set('GST_VERSION', meson.project_version())
 devenv.set('GST_ENV', 'gst-' + meson.project_version())
 devenv.set('GST_REGISTRY', meson.current_build_dir() / 'registry.dat')
 devenv.set('GST_PLUGIN_SYSTEM_PATH', '')
+devenv.set('GST_PLUGIN_LOADING_WHITELIST', '*')
 meson.add_devenv(devenv)
 
 generate_plugins_paths = find_program('scripts/generate_plugins_path.py')
